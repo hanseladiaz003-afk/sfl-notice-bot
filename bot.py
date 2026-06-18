@@ -1,11 +1,9 @@
 """
 SFL Notice Bot - Sunflower Land Telegram Bot
-Replica de @sfl_notice_bot con notificaciones y consulta de lands
+Réplica completa de @sfl_notice_bot con TODAS las alertas
 """
 
-import asyncio
 import logging
-import json
 import aiohttp
 from datetime import datetime, timezone
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -14,13 +12,12 @@ from telegram.ext import (
     ContextTypes, MessageHandler, filters
 )
 
-# ─── CONFIG ──────────────────────────────────────────────────────────────────
-BOT_TOKEN = "8916752238:AAGXKRhpXTWeFI-HfxeMCUdwviPldfMGymk"   # ← Reemplaza con tu token de @BotFather
+# ─── CONFIG ───────────────────────────────────────────────────────────────────
+BOT_TOKEN = "8916752238:AAGXKRhpXTWeFI-HfxeMCUdwviPldfMGymk"  # ← Reemplaza con tu token de @BotFather
 
-SFL_API_BASE   = "https://api.sunflower-land.com/community/farms"
-SFL_WORLD_API  = "https://sfl.world/api"          # precios & land boosts
-SFL_PRICES_API = "https://sfl.world/api/prices"   # precio SFL/MATIC
-SFL_P2P_API    = "https://sfl.world/api/exchange"  # mercado P2P
+SFL_FARM_API     = "https://api.sunflower-land.com/community/farms"
+SFL_PRICES_API   = "https://sfl.world/api/prices"
+SFL_EXCHANGE_API = "https://sfl.world/api/exchange"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -28,389 +25,591 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ─── HELPERS API ─────────────────────────────────────────────────────────────
+# ─── Tiempos de regeneración (segundos) ───────────────────────────────────────
+REGEN = {
+    "trees":     2  * 3600,
+    "stones":    4  * 3600,
+    "iron":      8  * 3600,
+    "gold":      24 * 3600,
+    "crimstone": 3  * 24 * 3600,
+    "sunstone":  3  * 24 * 3600,
+    "obsidian":  3  * 24 * 3600,
+    "oil":       16 * 3600,
+    "chickens":  24 * 3600,
+    "barn":      24 * 3600,
+    "fruits":    14 * 3600,
+    "compost":   6  * 3600,
+}
 
-async def fetch_json(url: str) -> dict | None:
-    """Hace GET a una URL y retorna JSON o None si falla."""
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-            async with session.get(url) as resp:
-                if resp.status == 200:
-                    return await resp.json(content_type=None)
-    except Exception as e:
-        logger.error(f"Error fetching {url}: {e}")
-    return None
+# Nombres visuales de cada alerta
+ALERT_NAMES = {
+    "trees":      "🌳 Árboles",
+    "stones":     "⛏️ Piedras",
+    "iron":       "🔩 Hierro",
+    "gold":       "🥇 Oro",
+    "crimstone":  "💎 Crimstone",
+    "sunstone":   "🪨 Sunstone",
+    "obsidian":   "🖤 Obsidiana",
+    "oil":        "🛢️ Petróleo",
+    "crops":      "🌾 Cultivos",
+    "fruits":     "🍎 Frutas",
+    "compost":    "🌿 Compost",
+    "trade":      "🏪 Comercio",
+    "chickens":   "🐔 Gallinero",
+    "barn":       "🌾 Granero",
+    "checklist":  "✅ Verificación",
+    "auction":    "🏛️ Subastas",
+    "giftgiver":  "🎁 Gift Giver",
+    "loveisland": "🏝️ Love Island",
+    "cooking":    "🍳 Cocina",
+    "delivery":   "📦 Entregas NPC",
+}
 
+# ─── HELPERS ──────────────────────────────────────────────────────────────────
 
-async def get_farm_data(farm_id: str) -> dict | None:
-    url = f"{SFL_API_BASE}/{farm_id}"
-    return await fetch_json(url)
+def now_ts() -> float:
+    return datetime.now(timezone.utc).timestamp()
 
+def now_utc() -> str:
+    return datetime.now(timezone.utc).strftime("%H:%M UTC")
 
-async def get_prices() -> dict | None:
-    return await fetch_json(SFL_PRICES_API)
-
-
-async def get_exchange() -> dict | None:
-    return await fetch_json(SFL_P2P_API)
-
-# ─── COMANDOS ────────────────────────────────────────────────────────────────
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando /start — menú principal."""
-    keyboard = [
-        [InlineKeyboardButton("🌾 Consultar Land", callback_data="menu_land"),
-         InlineKeyboardButton("💰 Precios SFL",    callback_data="menu_prices")],
-        [InlineKeyboardButton("🔔 Mis Alertas",    callback_data="menu_alerts"),
-         InlineKeyboardButton("📊 Mercado P2P",    callback_data="menu_exchange")],
-        [InlineKeyboardButton("❓ Ayuda",           callback_data="menu_help")],
-    ]
-    text = (
-        "🌻 *SFL Notice Bot* — Sunflower Land\n\n"
-        "Tu asistente para recibir alertas y consultar información "
-        "de Sunflower Land directamente en Telegram.\n\n"
-        "Elige una opción:"
-    )
-    await update.message.reply_text(
-        text, parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "📖 *Comandos disponibles:*\n\n"
-        "/start — Menú principal\n"
-        "/land <farm\\_id> — Info de tu land\n"
-        "/precio — Precio actual de SFL\n"
-        "/mercado — Precios del mercado P2P\n"
-        "/alertas — Ver mis alertas activas\n"
-        "/alerta\\_entrega — Alerta de entrega NPC\n"
-        "/alerta\\_precio <valor> — Alerta cuando SFL llegue a ese precio\n"
-        "/help — Esta ayuda\n\n"
-        "🌐 Datos obtenidos de [sfl.world](https://sfl.world)"
-    )
-    msg = update.message or update.callback_query.message
-    await msg.reply_text(text, parse_mode="Markdown", disable_web_page_preview=True)
-
-
-async def land_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Consulta info de una farm por ID."""
-    msg = update.message
-    if not context.args:
-        await msg.reply_text(
-            "🌾 Ingresa tu Farm ID:\n`/land 12345`", parse_mode="Markdown"
-        )
-        return
-    farm_id = context.args[0].strip()
-    await msg.reply_text(f"🔍 Buscando land #{farm_id}...")
-    await _show_land(msg, farm_id)
-
-
-async def _show_land(msg, farm_id: str):
-    """Lógica compartida para mostrar datos de una land."""
-    data = await get_farm_data(farm_id)
-    if not data:
-        await msg.reply_text(
-            f"❌ No se encontró la land #{farm_id}.\n"
-            "Verifica el ID en [sfl.world](https://sfl.world/land)",
-            parse_mode="Markdown"
-        )
-        return
-
-    # Extraer datos relevantes
-    state = data.get("state", {})
-    inventory = state.get("inventory", {})
-    balance   = state.get("balance", "0")
-    username  = state.get("username", "Sin nombre")
-    bumpkin   = state.get("bumpkin", {})
-    experience = bumpkin.get("experience", 0)
-
-    # Calcular nivel aproximado del bumpkin
-    level = _xp_to_level(experience)
-
-    # Recursos principales
-    resources = {
-        "🌻 SFL":      _safe_float(balance),
-        "🌽 Maíz":     _safe_float(inventory.get("Corn", 0)),
-        "🥕 Zanahorias": _safe_float(inventory.get("Carrot", 0)),
-        "🎃 Calabaza": _safe_float(inventory.get("Pumpkin", 0)),
-        "🪵 Madera":   _safe_float(inventory.get("Wood", 0)),
-        "⛏️ Piedra":   _safe_float(inventory.get("Stone", 0)),
-        "🪙 Monedas":  _safe_float(inventory.get("Coin", 0)),
-    }
-    res_text = "\n".join(f"  {k}: `{v:,.2f}`" for k, v in resources.items() if v > 0)
-
-    text = (
-        f"🌾 *Land #{farm_id}*\n"
-        f"👤 {username}  |  Nivel {level}\n"
-        f"✨ XP: `{experience:,.0f}`\n\n"
-        f"📦 *Inventario:*\n{res_text or '  (vacío)'}\n\n"
-        f"🔗 [Ver en sfl.world](https://sfl.world/land?id={farm_id})"
-    )
-    await msg.reply_text(text, parse_mode="Markdown", disable_web_page_preview=False)
-
-
-def _safe_float(val) -> float:
+def safe_float(val) -> float:
     try:
         return float(val)
     except (TypeError, ValueError):
         return 0.0
 
+def fmt_time(secs: float) -> str:
+    if secs <= 0:
+        return "¡Listo! ✅"
+    h, m = int(secs // 3600), int((secs % 3600) // 60)
+    return f"{h}h {m}m" if h > 0 else f"{m}m"
 
-def _xp_to_level(xp: float) -> int:
-    """Aproximación de nivel por XP de Bumpkin."""
+def xp_to_level(xp: float) -> int:
     thresholds = [0,10,20,50,100,200,375,600,875,1200,1600,2100,
                   2700,3400,4200,5100,6100,7200,8400,9700,11100]
-    level = 1
+    lvl = 1
     for i, t in enumerate(thresholds):
         if xp >= t:
-            level = i + 1
-    return level
+            lvl = i + 1
+    return lvl
 
-
-async def precio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Precio actual de SFL."""
-    msg = update.message or update.callback_query.message
-    await msg.reply_text("💰 Obteniendo precio...")
-    data = await get_prices()
-    if not data:
-        await msg.reply_text("❌ No se pudo obtener el precio ahora. Intenta más tarde.")
-        return
-
-    sfl   = data.get("sfl",  {})
-    matic = data.get("matic", {})
-
-    text = (
-        "💰 *Precios actuales*\n\n"
-        f"🌻 SFL:  `${_safe_float(sfl.get('usd', 0)):.6f}` USD\n"
-        f"📐 MATIC: `${_safe_float(matic.get('usd', 0)):.4f}` USD\n\n"
-        f"🕐 Actualizado: {_now_utc()}"
-    )
-    await msg.reply_text(text, parse_mode="Markdown")
-
-
-async def mercado_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Precios del mercado P2P (floor prices)."""
-    msg = update.message or update.callback_query.message
-    await msg.reply_text("📊 Consultando mercado P2P...")
-    data = await get_exchange()
-    if not data:
-        await msg.reply_text("❌ No se pudo obtener el mercado ahora.")
-        return
-
-    p2p   = data.get("p2p", {})
-    seq   = data.get("seq", {})
-    items = list(p2p.items())[:10]   # top 10
-
-    if not items:
-        await msg.reply_text("📊 No hay datos de mercado disponibles.")
-        return
-
-    lines = [f"  `{name}`: {_safe_float(price):.4f} SFL" for name, price in items]
-    text = (
-        "📊 *Mercado P2P — Floor prices*\n\n"
-        + "\n".join(lines) +
-        f"\n\n🕐 {_now_utc()}\n"
-        "🔗 [Ver mercado completo](https://sfl.world)"
-    )
-    await msg.reply_text(text, parse_mode="Markdown", disable_web_page_preview=True)
-
-
-def _now_utc() -> str:
-    return datetime.now(timezone.utc).strftime("%H:%M UTC")
-
-# ─── ALERTAS ─────────────────────────────────────────────────────────────────
-
-async def alertas_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ver alertas activas del usuario."""
-    user_id = str(update.effective_user.id)
-    alerts  = context.bot_data.get("alerts", {}).get(user_id, {})
-
-    if not alerts:
-        text = (
-            "🔔 *Mis Alertas*\n\n"
-            "No tienes alertas activas.\n\n"
-            "Puedes crear:\n"
-            "`/alerta_entrega` — Recordatorio de entrega NPC diaria\n"
-            "`/alerta_precio 0.05` — Alerta cuando SFL llegue a ese precio"
-        )
-    else:
-        lines = []
-        if alerts.get("delivery"):
-            lines.append("✅ Entrega NPC diaria (00:00 UTC)")
-        if alerts.get("price"):
-            lines.append(f"✅ Precio SFL ≥ `{alerts['price']}` USD")
-        text = "🔔 *Mis Alertas activas:*\n\n" + "\n".join(lines)
-
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-
-async def alerta_entrega_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Activa alerta de entrega NPC diaria."""
-    user_id = str(update.effective_user.id)
+def get_alerts(context, user_id: str) -> dict:
     if "alerts" not in context.bot_data:
         context.bot_data["alerts"] = {}
     if user_id not in context.bot_data["alerts"]:
-        context.bot_data["alerts"][user_id] = {}
+        context.bot_data["alerts"][user_id] = {
+            **{k: False for k in ALERT_NAMES},
+            "farm_id": None,
+            "last_notified": {}
+        }
+    return context.bot_data["alerts"][user_id]
 
-    context.bot_data["alerts"][user_id]["delivery"] = True
-    await update.message.reply_text(
-        "✅ *Alerta de entrega NPC activada*\n"
-        "Te notificaré cada día a las 00:00 UTC cuando se reinicien las entregas.",
-        parse_mode="Markdown"
-    )
-
-
-async def alerta_precio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Activa alerta de precio SFL."""
-    if not context.args:
-        await update.message.reply_text(
-            "Ejemplo: `/alerta_precio 0.05`\n"
-            "Te aviso cuando SFL llegue a ese precio en USD.",
-            parse_mode="Markdown"
-        )
-        return
+async def fetch(url: str) -> dict | None:
     try:
-        target = float(context.args[0])
-    except ValueError:
-        await update.message.reply_text("❌ Precio inválido. Ejemplo: `/alerta_precio 0.05`",
-                                        parse_mode="Markdown")
-        return
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
+            async with s.get(url) as r:
+                if r.status == 200:
+                    return await r.json(content_type=None)
+    except Exception as e:
+        logger.error(f"Fetch error {url}: {e}")
+    return None
 
-    user_id = str(update.effective_user.id)
-    if "alerts" not in context.bot_data:
-        context.bot_data["alerts"] = {}
-    if user_id not in context.bot_data["alerts"]:
-        context.bot_data["alerts"][user_id] = {}
+# ─── TECLADO DE ALERTAS ───────────────────────────────────────────────────────
 
-    context.bot_data["alerts"][user_id]["price"] = target
+def alerts_keyboard(alerts: dict) -> InlineKeyboardMarkup:
+    keys = list(ALERT_NAMES.keys())
+    buttons = []
+    for i in range(0, len(keys), 2):
+        row = []
+        for key in keys[i:i+2]:
+            icon  = "🟢" if alerts.get(key) else "🔴"
+            label = ALERT_NAMES[key]
+            row.append(InlineKeyboardButton(f"{icon} {label}", callback_data=f"tog_{key}"))
+        buttons.append(row)
+    buttons.append([
+        InlineKeyboardButton("✅ Activar TODAS",    callback_data="all_on"),
+        InlineKeyboardButton("❌ Desactivar todas", callback_data="all_off"),
+    ])
+    buttons.append([InlineKeyboardButton("🔙 Menú", callback_data="main_menu")])
+    return InlineKeyboardMarkup(buttons)
+
+def main_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🌾 Mi Land",       callback_data="do_land"),
+         InlineKeyboardButton("💰 Precio SFL",    callback_data="do_precio")],
+        [InlineKeyboardButton("🔔 Alertas",       callback_data="do_alertas"),
+         InlineKeyboardButton("📊 Mercado P2P",   callback_data="do_mercado")],
+        [InlineKeyboardButton("⏱️ Timers",        callback_data="do_timers"),
+         InlineKeyboardButton("❓ Ayuda",          callback_data="do_help")],
+    ])
+
+# ─── COMANDOS ─────────────────────────────────────────────────────────────────
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"✅ *Alerta de precio activada*\n"
-        f"Te notificaré cuando SFL llegue a `${target}` USD.",
+        "🌻 *SFL Notice Bot* — Sunflower Land\n\n"
+        "Tu asistente completo para Sunflower Land.\n\n"
+        "👉 Primero registra tu Farm ID:\n`/setfarm 12345`",
+        parse_mode="Markdown",
+        reply_markup=main_keyboard()
+    )
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message or update.callback_query.message
+    await msg.reply_text(
+        "📖 *Comandos:*\n\n"
+        "`/setfarm 12345` — Registrar Farm ID\n"
+        "`/land` — Ver tu land\n"
+        "`/timers` — Tiempos de recursos\n"
+        "`/alertas` — Gestionar alertas\n"
+        "`/precio` — Precio SFL y MATIC\n"
+        "`/mercado` — Mercado P2P\n"
+        "`/help` — Esta ayuda\n\n"
+        "🔗 [sfl.world](https://sfl.world)",
+        parse_mode="Markdown",
+        disable_web_page_preview=True
+    )
+
+async def setfarm_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("Ejemplo: `/setfarm 12345`", parse_mode="Markdown")
+        return
+    farm_id = context.args[0].strip()
+    await update.message.reply_text(f"🔍 Verificando land #{farm_id}...")
+    data = await fetch(f"{SFL_FARM_API}/{farm_id}")
+    if not data:
+        await update.message.reply_text(f"❌ Land #{farm_id} no encontrada.")
+        return
+    state    = data.get("state", {})
+    username = state.get("username", "Sin nombre")
+    level    = xp_to_level(safe_float(state.get("bumpkin", {}).get("experience", 0)))
+    alrts    = get_alerts(context, user_id)
+    alrts["farm_id"] = farm_id
+    await update.message.reply_text(
+        f"✅ *Land #{farm_id} registrada*\n"
+        f"👤 {username} — Nivel {level}\n\n"
+        "Activa tus alertas con `/alertas`",
         parse_mode="Markdown"
     )
 
-# ─── JOBS (tareas periódicas) ─────────────────────────────────────────────────
+async def land_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    msg     = update.message
+    farm_id = context.args[0] if context.args else get_alerts(context, user_id).get("farm_id")
+    if not farm_id:
+        await msg.reply_text("❌ Usa `/setfarm 12345` primero.", parse_mode="Markdown")
+        return
+    await msg.reply_text(f"🔍 Consultando land #{farm_id}...")
+    data = await fetch(f"{SFL_FARM_API}/{farm_id}")
+    if not data:
+        await msg.reply_text("❌ No se pudo obtener la land.")
+        return
+    state     = data.get("state", {})
+    inv       = state.get("inventory", {})
+    username  = state.get("username", "Sin nombre")
+    level     = xp_to_level(safe_float(state.get("bumpkin", {}).get("experience", 0)))
+    res = {
+        "🌻 FLOWER": safe_float(state.get("balance", 0)),
+        "🪵 Madera":  safe_float(inv.get("Wood", 0)),
+        "⛏️ Piedra":  safe_float(inv.get("Stone", 0)),
+        "🔩 Hierro":  safe_float(inv.get("Iron", 0)),
+        "🥇 Oro":     safe_float(inv.get("Gold", 0)),
+        "🌽 Maíz":    safe_float(inv.get("Corn", 0)),
+        "🥕 Zanahoria": safe_float(inv.get("Carrot", 0)),
+        "🪙 Monedas": safe_float(inv.get("Coin", 0)),
+    }
+    lines = "\n".join(f"  {k}: `{v:,.2f}`" for k, v in res.items() if v > 0)
+    await msg.reply_text(
+        f"🌾 *Land #{farm_id}*\n👤 {username} — Nivel {level}\n\n"
+        f"📦 *Inventario:*\n{lines or '  (vacío)'}\n\n"
+        f"🔗 [Ver en sfl.world](https://sfl.world/land?id={farm_id})",
+        parse_mode="Markdown"
+    )
 
-async def job_npc_delivery(context: ContextTypes.DEFAULT_TYPE):
-    """Notificación diaria de reset de entregas NPC (00:00 UTC)."""
-    alerts = context.bot_data.get("alerts", {})
-    for user_id, prefs in alerts.items():
-        if prefs.get("delivery"):
+async def timers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    farm_id = get_alerts(context, user_id).get("farm_id")
+    if not farm_id:
+        await update.message.reply_text("❌ Usa `/setfarm 12345` primero.", parse_mode="Markdown")
+        return
+    await update.message.reply_text("⏱️ Calculando tiempos...")
+    data = await fetch(f"{SFL_FARM_API}/{farm_id}")
+    if not data:
+        await update.message.reply_text("❌ No se pudo obtener la land.")
+        return
+    state = data.get("state", {})
+    n     = now_ts()
+    lines = [f"⏱️ *Timers — Land #{farm_id}*\n"]
+
+    def nearest(items, ts_path, regen_key):
+        times = []
+        for v in items.values():
+            if not isinstance(v, dict): continue
+            obj = v
+            for p in ts_path.split("."):
+                obj = obj.get(p, {}) if isinstance(obj, dict) else None
+                if obj is None: break
+            if obj:
+                times.append(float(obj)/1000 + REGEN[regen_key] - n)
+        return min(times) if times else None
+
+    checks = [
+        ("trees",        "wood.choppedAt",    "trees",     "🌳 Árboles"),
+        ("stones",       "stone.minedAt",      "stones",    "⛏️ Piedras"),
+        ("iron",         "stone.minedAt",      "iron",      "🔩 Hierro"),
+        ("gold",         "stone.minedAt",      "gold",      "🥇 Oro"),
+        ("crimstones",   "stone.minedAt",      "crimstone", "💎 Crimstone"),
+        ("sunstones",    "stone.minedAt",      "sunstone",  "🪨 Sunstone"),
+        ("fruitPatches", "fruit.harvestedAt",  "fruits",    "🍎 Frutas"),
+    ]
+    for state_key, path, regen_key, label in checks:
+        t = nearest(state.get(state_key, {}), path, regen_key)
+        if t is not None:
+            lines.append(f"{label}: {fmt_time(t)}")
+
+    # Cultivos (tiempo variable, tomamos el primero)
+    crops = state.get("crops", {})
+    crop_times = []
+    for c in crops.values():
+        if isinstance(c, dict):
+            pa = c.get("crop", {}).get("plantedAt")
+            if pa:
+                crop_times.append(float(pa)/1000 + 60 - n)
+    if crop_times:
+        lines.append(f"🌾 Cultivos: {fmt_time(min(crop_times))}")
+
+    # Gallinas
+    chs = state.get("chickens", {})
+    ch_times = [float(c["fedAt"])/1000 + REGEN["chickens"] - n
+                for c in chs.values() if isinstance(c, dict) and c.get("fedAt")]
+    if ch_times:
+        lines.append(f"🐔 Gallinero: {fmt_time(min(ch_times))}")
+
+    if len(lines) == 1:
+        lines.append("No se encontraron recursos activos.")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+async def precio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg  = update.message or update.callback_query.message
+    data = await fetch(SFL_PRICES_API)
+    if not data:
+        await msg.reply_text("❌ No se pudo obtener el precio.")
+        return
+    sfl   = data.get("sfl", {})
+    matic = data.get("matic", {})
+    await msg.reply_text(
+        f"💰 *Precios*\n\n"
+        f"🌻 SFL:   `${safe_float(sfl.get('usd',0)):.6f}` USD\n"
+        f"📐 MATIC: `${safe_float(matic.get('usd',0)):.4f}` USD\n\n"
+        f"🕐 {now_utc()}",
+        parse_mode="Markdown"
+    )
+
+async def mercado_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg  = update.message or update.callback_query.message
+    data = await fetch(SFL_EXCHANGE_API)
+    if not data:
+        await msg.reply_text("❌ No se pudo obtener el mercado.")
+        return
+    items = list(data.get("p2p", {}).items())[:12]
+    if not items:
+        await msg.reply_text("No hay datos disponibles.")
+        return
+    lines = [f"  `{n}`: {safe_float(p):.4f} SFL" for n, p in items]
+    await msg.reply_text(
+        "📊 *Mercado P2P*\n\n" + "\n".join(lines) +
+        f"\n\n🕐 {now_utc()}\n🔗 [sfl.world](https://sfl.world)",
+        parse_mode="Markdown", disable_web_page_preview=True
+    )
+
+async def alertas_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    alrts   = get_alerts(context, user_id)
+    farm_id = alrts.get("farm_id", "No configurado")
+    await update.message.reply_text(
+        f"🔔 *Gestionar Alertas*\nFarm ID: `{farm_id}`\n\n"
+        "Toca 🟢/🔴 para activar o desactivar:",
+        parse_mode="Markdown",
+        reply_markup=alerts_keyboard(alrts)
+    )
+
+# ─── CALLBACKS ────────────────────────────────────────────────────────────────
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query   = update.callback_query
+    await query.answer()
+    d       = query.data
+    user_id = str(update.effective_user.id)
+    alrts   = get_alerts(context, user_id)
+
+    if d.startswith("tog_"):
+        key = d[4:]
+        if key in alrts:
+            alrts[key] = not alrts[key]
+        farm_id = alrts.get("farm_id", "No configurado")
+        await query.edit_message_text(
+            f"🔔 *Gestionar Alertas*\nFarm ID: `{farm_id}`\n\nToca 🟢/🔴 para activar o desactivar:",
+            parse_mode="Markdown",
+            reply_markup=alerts_keyboard(alrts)
+        )
+    elif d == "all_on":
+        for k in ALERT_NAMES:
+            alrts[k] = True
+        farm_id = alrts.get("farm_id", "No configurado")
+        await query.edit_message_text(
+            f"🔔 *Gestionar Alertas*\nFarm ID: `{farm_id}`\n\n✅ Todas activadas:",
+            parse_mode="Markdown",
+            reply_markup=alerts_keyboard(alrts)
+        )
+    elif d == "all_off":
+        for k in ALERT_NAMES:
+            alrts[k] = False
+        farm_id = alrts.get("farm_id", "No configurado")
+        await query.edit_message_text(
+            f"🔔 *Gestionar Alertas*\nFarm ID: `{farm_id}`\n\n❌ Todas desactivadas:",
+            parse_mode="Markdown",
+            reply_markup=alerts_keyboard(alrts)
+        )
+    elif d == "main_menu":
+        await query.edit_message_text(
+            "🌻 *SFL Notice Bot*\n\nElige una opción:",
+            parse_mode="Markdown",
+            reply_markup=main_keyboard()
+        )
+    elif d == "do_land":
+        await query.message.reply_text("Usa `/land` para ver tu land.", parse_mode="Markdown")
+    elif d == "do_precio":
+        await precio_cmd(update, context)
+    elif d == "do_mercado":
+        await mercado_cmd(update, context)
+    elif d == "do_alertas":
+        farm_id = alrts.get("farm_id", "No configurado")
+        await query.edit_message_text(
+            f"🔔 *Gestionar Alertas*\nFarm ID: `{farm_id}`\n\nToca 🟢/🔴 para activar o desactivar:",
+            parse_mode="Markdown",
+            reply_markup=alerts_keyboard(alrts)
+        )
+    elif d == "do_timers":
+        await query.message.reply_text("Usa `/timers` para ver los tiempos.", parse_mode="Markdown")
+    elif d == "do_help":
+        await help_cmd(update, context)
+
+# ─── JOB: VERIFICAR RECURSOS CADA 10 MIN ─────────────────────────────────────
+
+async def job_check(context: ContextTypes.DEFAULT_TYPE):
+    all_alerts = context.bot_data.get("alerts", {})
+    n = now_ts()
+
+    for user_id, alrts in all_alerts.items():
+        farm_id = alrts.get("farm_id")
+        if not farm_id:
+            continue
+        if not any(alrts.get(k) for k in ALERT_NAMES):
+            continue
+
+        data = await fetch(f"{SFL_FARM_API}/{farm_id}")
+        if not data:
+            continue
+
+        state = data.get("state", {})
+        last  = alrts.setdefault("last_notified", {})
+        msgs  = []
+
+        def check_nodes(state_key, ts_path, regen_key, emoji, label, cooldown=3600):
+            nodes = state.get(state_key, {})
+            ready = 0
+            for v in nodes.values():
+                if not isinstance(v, dict): continue
+                obj = v
+                for p in ts_path.split("."):
+                    obj = obj.get(p, {}) if isinstance(obj, dict) else None
+                    if obj is None: break
+                if obj and n >= float(obj)/1000 + REGEN.get(regen_key, 0):
+                    ready += 1
+            if ready > 0 and n - last.get(regen_key, 0) > cooldown:
+                msgs.append(f"{emoji} *¡{ready} {label} listo(s)!*")
+                last[regen_key] = n
+
+        if alrts.get("trees"):
+            check_nodes("trees", "wood.choppedAt", "trees", "🌳", "árbol(es) para talar")
+        if alrts.get("stones"):
+            check_nodes("stones", "stone.minedAt", "stones", "⛏️", "piedra(s) para minar")
+        if alrts.get("iron"):
+            check_nodes("iron", "stone.minedAt", "iron", "🔩", "nodo(s) de hierro")
+        if alrts.get("gold"):
+            check_nodes("gold", "stone.minedAt", "gold", "🥇", "nodo(s) de oro")
+        if alrts.get("crimstone"):
+            check_nodes("crimstones", "stone.minedAt", "crimstone", "💎", "Crimstone")
+        if alrts.get("sunstone"):
+            check_nodes("sunstones", "stone.minedAt", "sunstone", "🪨", "Sunstone")
+        if alrts.get("obsidian"):
+            check_nodes("obsidian", "stone.minedAt", "obsidian", "🖤", "Obsidiana")
+        if alrts.get("oil"):
+            check_nodes("oilReserves", "oil.drilledAt", "oil", "🛢️", "reserva(s) de petróleo")
+        if alrts.get("fruits"):
+            check_nodes("fruitPatches", "fruit.harvestedAt", "fruits", "🍎", "árbol(es) de fruta")
+
+        # Cultivos
+        if alrts.get("crops"):
+            crops = state.get("crops", {})
+            ready = sum(1 for c in crops.values()
+                        if isinstance(c, dict) and c.get("crop", {}).get("plantedAt")
+                        and n >= float(c["crop"]["plantedAt"])/1000 + 60)
+            if ready > 0 and n - last.get("crops", 0) > 600:
+                msgs.append(f"🌾 *¡{ready} cultivo(s) listo(s) para cosechar!*")
+                last["crops"] = n
+
+        # Gallinero
+        if alrts.get("chickens"):
+            chickens = state.get("chickens", {})
+            eggs, hungry, sick = 0, 0, 0
+            for ch in chickens.values():
+                if not isinstance(ch, dict): continue
+                if ch.get("fedAt") and n >= float(ch["fedAt"])/1000 + REGEN["chickens"]:
+                    eggs += 1
+                if ch.get("state") == "hungry":
+                    hungry += 1
+                if ch.get("state") == "sick":
+                    sick += 1
+            if eggs > 0 and n - last.get("chickens", 0) > 3600:
+                msgs.append(f"🐔 *¡{eggs} gallina(s) con huevos listos!*")
+                last["chickens"] = n
+            if hungry > 0 and n - last.get("ch_hungry", 0) > 3600:
+                msgs.append(f"🍗 *¡{hungry} gallina(s) con hambre! (necesitan trigo)*")
+                last["ch_hungry"] = n
+            if sick > 0 and n - last.get("ch_sick", 0) > 3600:
+                msgs.append(f"🤒 *¡{sick} gallina(s) enferma(s)! (necesitan medicina)*")
+                last["ch_sick"] = n
+
+        # Granero
+        if alrts.get("barn"):
+            animals = state.get("barn", {}).get("animals", {})
+            ready = sum(1 for a in animals.values()
+                        if isinstance(a, dict) and a.get("awakeAt")
+                        and n >= float(a["awakeAt"])/1000)
+            if ready > 0 and n - last.get("barn", 0) > 3600:
+                msgs.append(f"🌾 *¡{ready} animal(es) del granero listo(s)!*")
+                last["barn"] = n
+
+        # Compost
+        if alrts.get("compost"):
+            comp = state.get("buildings", {}).get("Composter", [{}])[0]
+            ready_at = comp.get("producing", {}).get("readyAt", 0)
+            if ready_at and n >= float(ready_at)/1000 and n - last.get("compost", 0) > 3600:
+                msgs.append("🌿 *¡Tu compost está listo!*")
+                last["compost"] = n
+
+        # Cocina
+        if alrts.get("cooking"):
+            buildings = state.get("buildings", {})
+            for bname, instances in buildings.items():
+                if any(x in bname for x in ["Kitchen", "Fire", "Deli", "Bakery"]):
+                    for inst in (instances if isinstance(instances, list) else []):
+                        ra = inst.get("crafting", {}).get("readyAt", 0)
+                        if ra and n >= float(ra)/1000 and n - last.get("cooking", 0) > 600:
+                            msgs.append(f"🍳 *¡Un plato está listo en {bname}!*")
+                            last["cooking"] = n
+                            break
+
+        # Entregas NPC
+        if alrts.get("delivery"):
+            if n - last.get("delivery", 0) > 82800:
+                orders = state.get("delivery", {}).get("orders", [])
+                if any(o.get("completedAt") for o in orders):
+                    msgs.append("📦 *¡Entregas NPC disponibles! (Reset 00:00 UTC)*")
+                    last["delivery"] = n
+
+        # Gift Giver
+        if alrts.get("giftgiver"):
+            streak_at = state.get("dailyRewards", {}).get("streakAt", 0)
+            if streak_at and n >= float(streak_at)/1000 + 86400 and n - last.get("giftgiver", 0) > 82800:
+                msgs.append("🎁 *¡Tu recompensa diaria del Gift Giver está disponible!*")
+                last["giftgiver"] = n
+
+        # Love Island
+        if alrts.get("loveisland"):
+            if state.get("loveIsland", {}).get("available") and n - last.get("loveisland", 0) > 86400:
+                msgs.append("🏝️ *¡Love Island está disponible ahora!*")
+                last["loveisland"] = n
+
+        # Subastas
+        if alrts.get("auction"):
+            end_at = state.get("auctioneer", {}).get("endAt", 0)
+            if end_at and n >= float(end_at)/1000 and n - last.get("auction", 0) > 3600:
+                msgs.append("🏛️ *¡Tu subasta ha terminado! Revisa los resultados.*")
+                last["auction"] = n
+
+        # Lista de Verificación
+        if alrts.get("checklist"):
+            chores = state.get("chores", {})
+            total  = len(chores)
+            done   = sum(1 for c in chores.values() if isinstance(c, dict) and c.get("completedAt"))
+            if total > 0 and done == total and n - last.get("checklist", 0) > 82800:
+                msgs.append(f"✅ *¡Completaste todos tus quehaceres ({done}/{total})!*")
+                last["checklist"] = n
+
+        # Comercio (placeholder — notifica si hay órdenes sin completar)
+        if alrts.get("trade"):
+            listings = state.get("trades", {}).get("listings", {})
+            sold = [l for l in listings.values() if isinstance(l, dict) and l.get("boughtAt")]
+            if sold and n - last.get("trade", 0) > 3600:
+                msgs.append(f"🏪 *¡Vendiste {len(sold)} artículo(s) en el mercado!*")
+                last["trade"] = n
+
+        alrts["last_notified"] = last
+
+        if msgs:
             try:
                 await context.bot.send_message(
                     chat_id=int(user_id),
-                    text=(
-                        "🌻 *¡Entregas NPC reiniciadas!*\n\n"
-                        "Ya puedes hacer tus entregas diarias en Sunflower Land.\n"
-                        "Las entregas se reinician a las 00:00 UTC.\n\n"
-                        "🔗 [Jugar ahora](https://sunflower-land.com/play)"
-                    ),
+                    text=f"🌻 *SFL Notice — Land #{farm_id}*\n\n" + "\n".join(msgs),
                     parse_mode="Markdown"
                 )
             except Exception as e:
                 logger.error(f"Error notificando a {user_id}: {e}")
 
-
-async def job_price_alert(context: ContextTypes.DEFAULT_TYPE):
-    """Verifica precios cada 15 min y notifica si se alcanza el objetivo."""
-    alerts = context.bot_data.get("alerts", {})
-    if not any(v.get("price") for v in alerts.values()):
-        return  # nadie tiene alerta de precio
-
-    data = await get_prices()
-    if not data:
-        return
-    current = _safe_float(data.get("sfl", {}).get("usd", 0))
-
-    for user_id, prefs in alerts.items():
-        target = prefs.get("price")
-        if target and current >= target:
-            try:
-                await context.bot.send_message(
-                    chat_id=int(user_id),
-                    text=(
-                        f"🚀 *¡Alerta de precio SFL!*\n\n"
-                        f"SFL ha alcanzado `${current:.6f}` USD\n"
-                        f"Tu objetivo era `${target}` USD\n\n"
-                        f"🔗 [Ver en sfl.world](https://sfl.world)"
-                    ),
-                    parse_mode="Markdown"
-                )
-                # Desactiva la alerta tras dispararse
-                context.bot_data["alerts"][user_id]["price"] = None
-            except Exception as e:
-                logger.error(f"Error notificando precio a {user_id}: {e}")
-
-# ─── CALLBACKS (botones inline) ───────────────────────────────────────────────
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-
-    if data == "menu_land":
-        await query.message.reply_text(
-            "🌾 Envía tu Farm ID:\n`/land 12345`", parse_mode="Markdown"
-        )
-    elif data == "menu_prices":
-        await precio_command(update, context)
-    elif data == "menu_exchange":
-        await mercado_command(update, context)
-    elif data == "menu_alerts":
-        text = (
-            "🔔 *Alertas disponibles:*\n\n"
-            "`/alerta_entrega` — Reset diario de entregas NPC\n"
-            "`/alerta_precio 0.05` — Precio SFL objetivo\n"
-            "`/alertas` — Ver mis alertas activas"
-        )
-        await query.message.reply_text(text, parse_mode="Markdown")
-    elif data == "menu_help":
-        await help_command(update, context)
-
-
-# ─── MENSAJE DE TEXTO (farm ID directo) ───────────────────────────────────────
+# ─── TEXTO LIBRE ──────────────────────────────────────────────────────────────
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Si el usuario envía solo un número, lo trata como Farm ID."""
     text = update.message.text.strip()
     if text.isdigit() and len(text) <= 9:
-        await update.message.reply_text(f"🔍 Buscando land #{text}...")
-        await _show_land(update.message, text)
+        data = await fetch(f"{SFL_FARM_API}/{text}")
+        if not data:
+            await update.message.reply_text("❌ Land no encontrada.")
+            return
+        state    = data.get("state", {})
+        username = state.get("username", "Sin nombre")
+        level    = xp_to_level(safe_float(state.get("bumpkin", {}).get("experience", 0)))
+        await update.message.reply_text(
+            f"🌾 *Land #{text}*\n👤 {username} — Nivel {level}\n\n"
+            f"Usa `/setfarm {text}` para activar alertas.",
+            parse_mode="Markdown"
+        )
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Comandos
-    app.add_handler(CommandHandler("start",          start))
-    app.add_handler(CommandHandler("help",           help_command))
-    app.add_handler(CommandHandler("land",           land_command))
-    app.add_handler(CommandHandler("precio",         precio_command))
-    app.add_handler(CommandHandler("mercado",        mercado_command))
-    app.add_handler(CommandHandler("alertas",        alertas_command))
-    app.add_handler(CommandHandler("alerta_entrega", alerta_entrega_command))
-    app.add_handler(CommandHandler("alerta_precio",  alerta_precio_command))
-
-    # Callbacks de botones
+    app.add_handler(CommandHandler("start",   start))
+    app.add_handler(CommandHandler("help",    help_cmd))
+    app.add_handler(CommandHandler("setfarm", setfarm_cmd))
+    app.add_handler(CommandHandler("land",    land_cmd))
+    app.add_handler(CommandHandler("timers",  timers_cmd))
+    app.add_handler(CommandHandler("precio",  precio_cmd))
+    app.add_handler(CommandHandler("mercado", mercado_cmd))
+    app.add_handler(CommandHandler("alertas", alertas_cmd))
     app.add_handler(CallbackQueryHandler(button_handler))
-
-    # Texto libre (farm ID numérico)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
-    # Jobs periódicos
-    jq = app.job_queue
-    # Notificación NPC: todos los días a las 00:00 UTC
-    jq.run_daily(job_npc_delivery, time=datetime.now(timezone.utc).replace(
-        hour=0, minute=0, second=0, microsecond=0).time())
-    # Verificar precios cada 15 minutos
-    jq.run_repeating(job_price_alert, interval=900, first=60)
+    # Verificar recursos cada 10 minutos
+    app.job_queue.run_repeating(job_check, interval=600, first=30)
 
-    logger.info("🌻 SFL Notice Bot iniciado...")
+    logger.info("🌻 SFL Notice Bot con todas las alertas iniciado...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
-
 
 if __name__ == "__main__":
     main()
