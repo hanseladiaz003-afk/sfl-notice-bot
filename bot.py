@@ -85,8 +85,25 @@ def fmt_time(secs: float) -> str:
     return f"{h}h {m}m" if h > 0 else f"{m}m"
 
 def xp_to_level(xp: float) -> int:
-    thresholds = [0,10,20,50,100,200,375,600,875,1200,1600,2100,
-                  2700,3400,4200,5100,6100,7200,8400,9700,11100]
+    # Thresholds oficiales de Sunflower Land para bumpkin levels
+    thresholds = [
+        0,10,20,50,100,200,375,600,875,1200,         # 1-10
+        1600,2100,2700,3400,4200,5100,6100,7200,      # 11-18
+        8400,9700,11100,12600,14200,15900,17700,       # 19-25
+        19600,21600,23700,25900,28200,30600,33100,     # 26-32
+        35700,38400,41200,44100,47100,50200,53400,     # 33-39
+        56700,60100,63600,67200,70900,74700,78600,     # 40-46
+        82600,86700,90900,95200,99600,104100,108700,   # 47-53
+        113400,118200,123100,128100,133200,138400,     # 54-59
+        143700,149100,154600,160200,165900,171700,     # 60-65
+        177600,183600,189700,195900,202200,208600,     # 66-71
+        215100,221700,228400,235200,242100,249100,     # 72-77
+        256200,263400,270700,278100,285600,293200,     # 78-83
+        300900,308700,316600,324600,332700,340900,     # 84-89
+        349200,357600,366100,374700,383400,392200,     # 90-95
+        401100,410100,419200,428400,437700,447100,     # 96-101
+        1000000,1100000,1200000,1300000,1400000,       # ~102+
+    ]
     lvl = 1
     for i, t in enumerate(thresholds):
         if xp >= t:
@@ -357,11 +374,22 @@ async def timers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(f"{label}: {fmt_time(t)}")
 
     crops = state.get("crops", {})
-    crop_times = [float(c["crop"]["plantedAt"])/1000 + 60 - n
-                  for c in crops.values()
-                  if isinstance(c, dict) and c.get("crop", {}).get("plantedAt")]
-    if crop_times:
-        lines.append(f"🌾 Cultivos: {fmt_time(min(crop_times))}")
+    crop_times = []
+    crop_ready = 0
+    for c in crops.values():
+        if not isinstance(c, dict): continue
+        crop_info = c.get("crop", {})
+        planted_at = crop_info.get("plantedAt")
+        if planted_at:
+            remaining = float(planted_at)/1000 + 60 - n
+            if remaining <= 0:
+                crop_ready += 1
+            else:
+                crop_times.append(remaining)
+    if crop_ready > 0:
+        lines.append(f"🌾 Cultivos: ¡{crop_ready} listo(s)! ✅")
+    elif crop_times:
+        lines.append(f"🌾 Cultivos (próximo): {fmt_time(min(crop_times))}")
 
     chs = state.get("chickens", {})
     ch_times = [float(c["fedAt"])/1000 + REGEN["chickens"] - n
@@ -515,15 +543,20 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
 
         if user.get("crops"):
             crops = state.get("crops", {})
-            ready = sum(1 for c in crops.values()
-                        if isinstance(c, dict) and c.get("crop", {}).get("plantedAt")
-                        and n >= float(c["crop"]["plantedAt"])/1000 + 60)
+            ready = 0
+            for c in crops.values():
+                if not isinstance(c, dict): continue
+                crop_info = c.get("crop", {})
+                planted_at = crop_info.get("plantedAt")
+                if planted_at and n >= float(planted_at)/1000 + 60:
+                    ready += 1
             if ready > 0 and n - last.get("crops", 0) > 600:
                 msgs.append(f"🌾 *¡{ready} cultivo(s) listo(s) para cosechar!*")
                 last["crops"] = n
 
         if user.get("chickens"):
-            chickens = state.get("chickens", {})
+            # chickens pueden estar en henHouse o chickens
+            chickens = state.get("henHouse", {}).get("chickens", state.get("chickens", {}))
             eggs = hungry = sick = 0
             for ch in chickens.values():
                 if not isinstance(ch, dict): continue
@@ -553,7 +586,7 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
 
         if user.get("cooking"):
             for bname, instances in state.get("buildings", {}).items():
-                if any(x in bname for x in ["Kitchen","Fire","Deli","Bakery"]):
+                if any(x in bname for x in ["Kitchen","Fire Pit","Deli","Bakery","Smoothie Shack"]):
                     for inst in (instances if isinstance(instances, list) else []):
                         ra = inst.get("crafting", {}).get("readyAt", 0)
                         if ra and n >= float(ra)/1000 and n - last.get("cooking", 0) > 600:
