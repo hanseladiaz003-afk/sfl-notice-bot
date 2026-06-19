@@ -112,7 +112,12 @@ async def fetch_farm(farm_id: str, api_key: str) -> dict | None:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
             async with s.get(f"{SFL_API}/{farm_id}", headers=headers) as r:
                 if r.status == 200:
-                    return await r.json(content_type=None)
+                    data = await r.json(content_type=None)
+                    # La API devuelve {farm: {...}, id, nft_id, ...}
+                    # Normalizamos para que siempre devuelva el estado de la farm
+                    if "farm" in data:
+                        return data["farm"]
+                    return data
                 else:
                     text = await r.text()
                     logger.error(f"Error API {r.status}: {text}")
@@ -230,7 +235,7 @@ async def setup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user["farm_id"] = farm_id
     user["api_key"] = api_key
 
-    state    = data.get("state", data)
+    state = data
     username = state.get("username", "Sin nombre")
     level    = xp_to_level(safe_float(state.get("bumpkin", {}).get("experience", 0)))
     balance  = safe_float(state.get("balance", 0))
@@ -280,20 +285,21 @@ async def land_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text("❌ No se pudo obtener la land. Verifica tu API Key con `/setup`.")
         return
 
-    state    = data.get("state", data)
+    state = data
     inv      = state.get("inventory", {})
     username = state.get("username", "Sin nombre")
     level    = xp_to_level(safe_float(state.get("bumpkin", {}).get("experience", 0)))
     res = {
         "🌻 SFL":       safe_float(state.get("balance", 0)),
+        "🪙 Monedas":   safe_float(state.get("coins", 0)),
+        "🌸 FLOWER":    safe_float(state.get("flower", 0)),
+        "💎 Gemas":     safe_float(state.get("gems", 0)),
         "🪵 Madera":    safe_float(inv.get("Wood", 0)),
         "⛏️ Piedra":    safe_float(inv.get("Stone", 0)),
         "🔩 Hierro":    safe_float(inv.get("Iron", 0)),
         "🥇 Oro":       safe_float(inv.get("Gold", 0)),
         "🌽 Maíz":      safe_float(inv.get("Corn", 0)),
         "🥕 Zanahoria": safe_float(inv.get("Carrot", 0)),
-        "🪙 Monedas":   safe_float(inv.get("Coin", 0)),
-        "🌸 FLOWER":    safe_float(inv.get("Flower", 0)),
     }
     lines = "\n".join(f"  {k}: `{v:,.2f}`" for k, v in res.items() if v > 0)
     await msg.reply_text(
@@ -320,7 +326,7 @@ async def timers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No se pudo obtener la land.")
         return
 
-    state = data.get("state", data)
+    state = data
     n     = now_ts()
     lines = [f"⏱️ *Timers — Land #{user['farm_id']}*\n"]
 
@@ -478,7 +484,7 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
         if not data:
             continue
 
-        state = data.get("state", data)
+        state = data
         last  = user.setdefault("last_notified", {})
         msgs  = []
 
