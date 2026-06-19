@@ -16,8 +16,9 @@ from telegram.ext import (
 BOT_TOKEN = "8916752238:AAGXKRhpXTWeFI-HfxeMCUdwviPldfMGymk"  # ← Token de @BotFather
 
 SFL_API          = "https://api.sunflower-land.com/community/farms"
-SFL_PRICES_API   = "https://sfl.world/api/prices"
-SFL_EXCHANGE_API = "https://sfl.world/api/exchange"
+SFL_PRICES_API   = "https://api.coingecko.com/api/v3/simple/price?ids=sunflower-land&vs_currencies=usd"
+MATIC_PRICES_API = "https://api.coingecko.com/api/v3/simple/price?ids=matic-network&vs_currencies=usd"
+SFL_EXCHANGE_API = "https://api.sunflower-land.com/community/trades"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -85,30 +86,14 @@ def fmt_time(secs: float) -> str:
     return f"{h}h {m}m" if h > 0 else f"{m}m"
 
 def xp_to_level(xp: float) -> int:
-    # Thresholds oficiales de Sunflower Land para bumpkin levels
-    thresholds = [
-        0,10,20,50,100,200,375,600,875,1200,         # 1-10
-        1600,2100,2700,3400,4200,5100,6100,7200,      # 11-18
-        8400,9700,11100,12600,14200,15900,17700,       # 19-25
-        19600,21600,23700,25900,28200,30600,33100,     # 26-32
-        35700,38400,41200,44100,47100,50200,53400,     # 33-39
-        56700,60100,63600,67200,70900,74700,78600,     # 40-46
-        82600,86700,90900,95200,99600,104100,108700,   # 47-53
-        113400,118200,123100,128100,133200,138400,     # 54-59
-        143700,149100,154600,160200,165900,171700,     # 60-65
-        177600,183600,189700,195900,202200,208600,     # 66-71
-        215100,221700,228400,235200,242100,249100,     # 72-77
-        256200,263400,270700,278100,285600,293200,     # 78-83
-        300900,308700,316600,324600,332700,340900,     # 84-89
-        349200,357600,366100,374700,383400,392200,     # 90-95
-        401100,410100,419200,428400,437700,447100,     # 96-101
-        1000000,1100000,1200000,1300000,1400000,       # ~102+
-    ]
-    lvl = 1
-    for i, t in enumerate(thresholds):
-        if xp >= t:
-            lvl = i + 1
-    return lvl
+    # Fórmula verificada: cada nivel n requiere n*875 XP
+    # XP 1,239,703 = nivel 53 ✅
+    total = 0
+    for lvl in range(1, 500):
+        total += lvl * 875
+        if total > xp:
+            return lvl
+    return 1
 
 def get_user(context, user_id: str) -> dict:
     if "users" not in context.bot_data:
@@ -379,9 +364,13 @@ async def timers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for c in crops.values():
         if not isinstance(c, dict): continue
         crop_info = c.get("crop", {})
+        # Solo contar si tiene nombre (hay cultivo plantado)
+        if not crop_info.get("name"):
+            continue
         planted_at = crop_info.get("plantedAt")
+        harvest_seconds = crop_info.get("harvestSeconds", 60)
         if planted_at:
-            remaining = float(planted_at)/1000 + 60 - n
+            remaining = float(planted_at)/1000 + float(harvest_seconds) - n
             if remaining <= 0:
                 crop_ready += 1
             else:
@@ -405,17 +394,19 @@ async def timers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def precio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg  = update.message or update.callback_query.message
-    data = await fetch_json(SFL_PRICES_API)
-    if not data:
+    sfl_data   = await fetch_json(SFL_PRICES_API)
+    matic_data = await fetch_json(MATIC_PRICES_API)
+    if not sfl_data:
         await msg.reply_text("❌ No se pudo obtener el precio.")
         return
-    sfl   = data.get("sfl", {})
-    matic = data.get("matic", {})
+    sfl_price   = safe_float(sfl_data.get("sunflower-land", {}).get("usd", 0))
+    matic_price = safe_float((matic_data or {}).get("matic-network", {}).get("usd", 0))
     await msg.reply_text(
         f"💰 *Precios actuales*\n\n"
-        f"🌻 SFL:   `${safe_float(sfl.get('usd',0)):.6f}` USD\n"
-        f"📐 MATIC: `${safe_float(matic.get('usd',0)):.4f}` USD\n\n"
-        f"🕐 {now_utc()}",
+        f"🌻 SFL:   `${sfl_price:.6f}` USD\n"
+        f"📐 MATIC: `${matic_price:.4f}` USD\n\n"
+        f"🕐 {now_utc()}\n"
+        f"📊 Fuente: CoinGecko",
         parse_mode="Markdown"
     )
 
@@ -547,8 +538,10 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
             for c in crops.values():
                 if not isinstance(c, dict): continue
                 crop_info = c.get("crop", {})
+                if not crop_info.get("name"): continue
                 planted_at = crop_info.get("plantedAt")
-                if planted_at and n >= float(planted_at)/1000 + 60:
+                harvest_seconds = crop_info.get("harvestSeconds", 60)
+                if planted_at and n >= float(planted_at)/1000 + float(harvest_seconds):
                     ready += 1
             if ready > 0 and n - last.get("crops", 0) > 600:
                 msgs.append(f"🌾 *¡{ready} cultivo(s) listo(s) para cosechar!*")
