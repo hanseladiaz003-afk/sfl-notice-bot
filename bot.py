@@ -15,7 +15,7 @@ from telegram.ext import (
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 BOT_TOKEN = "8916752238:AAGXKRhpXTWeFI-HfxeMCUdwviPldfMGymk"  # ← Token de @BotFather
 
-SFL_API          = "https://i.sunflower-land.com/community/farms"
+SFL_API          = "https://api.sunflower-land.com/community/farms"
 SFL_PRICES_API   = "https://sfl.world/api/prices"
 SFL_EXCHANGE_API = "https://sfl.world/api/exchange"
 
@@ -193,12 +193,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def setup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Configura Farm ID y API Key en un solo comando."""
     user_id = str(update.effective_user.id)
-
-    # Borrar mensaje por seguridad (contiene la API key)
-    try:
-        await update.message.delete()
-    except Exception:
-        pass
 
     if len(context.args) < 2:
         await update.message.reply_text(
