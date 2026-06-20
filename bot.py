@@ -609,8 +609,12 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
                                 if not isinstance(item, dict): continue
                                 ra = item.get("readyAt", 0)
                                 item_name = item.get("name", "plato")
-                                cooldown_key = f"cooking_{bname}_{item_name}"
-                                if ra and n >= float(ra)/1000 and n - last.get(cooldown_key, 0) > 120:
+                                # Usamos el readyAt exacto como parte de la clave: así,
+                                # mientras no recojas el plato (readyAt no cambia),
+                                # solo se notifica UNA vez. Si vuelves a cocinar algo
+                                # nuevo, el readyAt cambia y se notifica de nuevo.
+                                cooldown_key = f"cooking_{bname}_{item_name}_{ra}"
+                                if ra and n >= float(ra)/1000 and cooldown_key not in last:
                                     msgs.append(f"🍳 *¡{item_name} listo en {bname}!*")
                                     last[cooldown_key] = n
 
