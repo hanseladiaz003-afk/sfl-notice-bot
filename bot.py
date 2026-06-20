@@ -384,10 +384,10 @@ async def timers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Solo contar si tiene nombre (hay cultivo plantado)
         if not crop_info.get("name"):
             continue
-        planted_at = crop_info.get("plantedAt")
-        harvest_seconds = crop_info.get("harvestSeconds", 60)
-        if planted_at:
-            remaining = float(planted_at)/1000 + float(harvest_seconds) - n
+        planted_at  = crop_info.get("plantedAt")
+        grow_time   = crop_info.get("boostedTime")  # duración real en ms
+        if planted_at and grow_time:
+            remaining = float(planted_at)/1000 + float(grow_time)/1000 - n
             if remaining <= 0:
                 crop_ready += 1
             else:
@@ -552,18 +552,21 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
 
             if user.get("crops"):
                 crops = state.get("crops", {})
-                ready = 0
+                ready_crops = []
                 for c in crops.values():
                     if not isinstance(c, dict): continue
                     crop_info = c.get("crop", {})
                     if not crop_info.get("name"): continue
                     planted_at = crop_info.get("plantedAt")
-                    harvest_seconds = crop_info.get("harvestSeconds", 60)
-                    if planted_at and n >= float(planted_at)/1000 + float(harvest_seconds):
-                        ready += 1
-                if ready > 0 and n - last.get("crops", 0) > 600:
-                    msgs.append(f"🌾 *¡{ready} cultivo(s) listo(s) para cosechar!*")
-                    last["crops"] = n
+                    grow_time  = crop_info.get("boostedTime")
+                    crop_id    = crop_info.get("id", "")
+                    if planted_at and grow_time and n >= float(planted_at)/1000 + float(grow_time)/1000:
+                        notify_key = f"crop_{crop_id}_{planted_at}"
+                        if notify_key not in last:
+                            ready_crops.append(crop_info.get("name", "cultivo"))
+                            last[notify_key] = n
+                if ready_crops:
+                    msgs.append(f"🌾 *¡{len(ready_crops)} cultivo(s) listo(s) para cosechar!*")
 
             if user.get("chickens"):
                 # chickens pueden estar en henHouse o chickens
