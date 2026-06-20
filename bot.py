@@ -516,135 +516,150 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
         if not any(user.get(k) for k in ALERT_NAMES):
             continue
 
-        data = await fetch_farm(farm_id, api_key)
-        if not data:
+        try:
+            data = await fetch_farm(farm_id, api_key)
+            if not data:
+                continue
+
+            state = data
+            last  = user.setdefault("last_notified", {})
+            msgs  = []
+
+            def check_nodes(state_key, ts_path, regen_key, emoji, label, cooldown=3600):
+                nodes = state.get(state_key, {})
+                ready = 0
+                for v in nodes.values():
+                    if not isinstance(v, dict): continue
+                    obj = v
+                    for p in ts_path.split("."):
+                        obj = obj.get(p, {}) if isinstance(obj, dict) else None
+                        if obj is None: break
+                    if obj and n >= float(obj)/1000 + REGEN.get(regen_key, 0):
+                        ready += 1
+                if ready > 0 and n - last.get(regen_key, 0) > cooldown:
+                    msgs.append(f"{emoji} *¡{ready} {label} listo(s)!*")
+                    last[regen_key] = n
+
+            if user.get("trees"):      check_nodes("trees",        "wood.choppedAt",   "trees",     "🌳", "árbol(es) para talar")
+            if user.get("stones"):     check_nodes("stones",       "stone.minedAt",    "stones",    "⛏️", "piedra(s) para minar")
+            if user.get("iron"):       check_nodes("iron",         "stone.minedAt",    "iron",      "🔩", "nodo(s) de hierro")
+            if user.get("gold"):       check_nodes("gold",         "stone.minedAt",    "gold",      "🥇", "nodo(s) de oro")
+            if user.get("crimstone"):  check_nodes("crimstones",   "stone.minedAt",    "crimstone", "💎", "Crimstone")
+            if user.get("sunstone"):   check_nodes("sunstones",    "stone.minedAt",    "sunstone",  "🪨", "Sunstone")
+            if user.get("obsidian"):   check_nodes("obsidian",     "stone.minedAt",    "obsidian",  "🖤", "Obsidiana")
+            if user.get("oil"):        check_nodes("oilReserves",  "oil.drilledAt",    "oil",       "🛢️", "reserva(s) de petróleo")
+            if user.get("fruits"):     check_nodes("fruitPatches", "fruit.harvestedAt","fruits",    "🍎", "árbol(es) de fruta")
+
+            if user.get("crops"):
+                crops = state.get("crops", {})
+                ready = 0
+                for c in crops.values():
+                    if not isinstance(c, dict): continue
+                    crop_info = c.get("crop", {})
+                    if not crop_info.get("name"): continue
+                    planted_at = crop_info.get("plantedAt")
+                    harvest_seconds = crop_info.get("harvestSeconds", 60)
+                    if planted_at and n >= float(planted_at)/1000 + float(harvest_seconds):
+                        ready += 1
+                if ready > 0 and n - last.get("crops", 0) > 600:
+                    msgs.append(f"🌾 *¡{ready} cultivo(s) listo(s) para cosechar!*")
+                    last["crops"] = n
+
+            if user.get("chickens"):
+                # chickens pueden estar en henHouse o chickens
+                chickens = state.get("henHouse", {}).get("chickens", state.get("chickens", {}))
+                eggs = hungry = sick = 0
+                for ch in chickens.values():
+                    if not isinstance(ch, dict): continue
+                    if ch.get("fedAt") and n >= float(ch["fedAt"])/1000 + REGEN["chickens"]: eggs += 1
+                    if ch.get("state") == "hungry":  hungry += 1
+                    if ch.get("state") == "sick":    sick += 1
+                if eggs   > 0 and n - last.get("chickens",  0) > 3600:
+                    msgs.append(f"🐔 *¡{eggs} gallina(s) con huevos listos!*");    last["chickens"] = n
+                if hungry > 0 and n - last.get("ch_hungry", 0) > 3600:
+                    msgs.append(f"🍗 *¡{hungry} gallina(s) con hambre!*");         last["ch_hungry"] = n
+                if sick   > 0 and n - last.get("ch_sick",   0) > 3600:
+                    msgs.append(f"🤒 *¡{sick} gallina(s) enferma(s)!*");           last["ch_sick"] = n
+
+            if user.get("barn"):
+                animals = state.get("barn", {}).get("animals", {})
+                ready = sum(1 for a in animals.values()
+                            if isinstance(a, dict) and a.get("awakeAt")
+                            and n >= float(a["awakeAt"])/1000)
+                if ready > 0 and n - last.get("barn", 0) > 3600:
+                    msgs.append(f"🌾 *¡{ready} animal(es) del granero listo(s)!*"); last["barn"] = n
+
+            if user.get("compost"):
+                comp     = state.get("buildings", {}).get("Compost Bin", [{}])[0]
+                ready_at = comp.get("producing", {}).get("readyAt", 0)
+                if ready_at and n >= float(ready_at)/1000 and n - last.get("compost", 0) > 3600:
+                    msgs.append("🌿 *¡Tu compost está listo!*"); last["compost"] = n
+
+            if user.get("cooking"):
+                for bname, instances in state.get("buildings", {}).items():
+                    if any(x in bname for x in ["Kitchen","Fire Pit","Deli","Bakery","Smoothie Shack"]):
+                        for inst in (instances if isinstance(instances, list) else []):
+                            if not isinstance(inst, dict): continue
+                            crafting_list = inst.get("crafting", [])
+                            if isinstance(crafting_list, dict):
+                                crafting_list = [crafting_list]
+                            if not isinstance(crafting_list, list):
+                                crafting_list = []
+                            for item in crafting_list:
+                                if not isinstance(item, dict): continue
+                                ra = item.get("readyAt", 0)
+                                item_name = item.get("name", "plato")
+                                cooldown_key = f"cooking_{bname}_{item_name}"
+                                if ra and n >= float(ra)/1000 and n - last.get(cooldown_key, 0) > 120:
+                                    msgs.append(f"🍳 *¡{item_name} listo en {bname}!*")
+                                    last[cooldown_key] = n
+
+            if user.get("delivery"):
+                orders = state.get("delivery", {}).get("orders", [])
+                if any(o.get("completedAt") for o in orders) and n - last.get("delivery", 0) > 82800:
+                    msgs.append("📦 *¡Entregas NPC disponibles!*"); last["delivery"] = n
+
+            if user.get("giftgiver"):
+                streak_at = state.get("dailyRewards", {}).get("streakAt", 0)
+                if streak_at and n >= float(streak_at)/1000 + 86400 and n - last.get("giftgiver", 0) > 82800:
+                    msgs.append("🎁 *¡Recompensa diaria del Gift Giver disponible!*"); last["giftgiver"] = n
+
+            if user.get("loveisland"):
+                if state.get("loveIsland", {}).get("available") and n - last.get("loveisland", 0) > 86400:
+                    msgs.append("🏝️ *¡Love Island disponible!*"); last["loveisland"] = n
+
+            if user.get("auction"):
+                end_at = state.get("auctioneer", {}).get("endAt", 0)
+                if end_at and n >= float(end_at)/1000 and n - last.get("auction", 0) > 3600:
+                    msgs.append("🏛️ *¡Tu subasta terminó!*"); last["auction"] = n
+
+            if user.get("checklist"):
+                chores = state.get("chores", {})
+                total  = len(chores)
+                done   = sum(1 for c in chores.values() if isinstance(c, dict) and c.get("completedAt"))
+                if total > 0 and done == total and n - last.get("checklist", 0) > 82800:
+                    msgs.append(f"✅ *¡Completaste todos tus quehaceres ({done}/{total})!*"); last["checklist"] = n
+
+            if user.get("trade"):
+                listings = state.get("trades", {}).get("listings", {})
+                sold = [l for l in listings.values() if isinstance(l, dict) and l.get("boughtAt")]
+                if sold and n - last.get("trade", 0) > 3600:
+                    msgs.append(f"🏪 *¡Vendiste {len(sold)} artículo(s)!*"); last["trade"] = n
+
+            user["last_notified"] = last
+
+            if msgs:
+                try:
+                    await context.bot.send_message(
+                        chat_id=int(user_id),
+                        text=f"🌻 *SFL Notice — Land #{farm_id}*\n\n" + "\n".join(msgs),
+                        parse_mode="Markdown"
+                    )
+                except Exception as e:
+                    logger.error(f"Error notificando a {user_id}: {e}")
+        except Exception as e:
+            logger.error(f"Error procesando alertas para usuario {user_id}: {e}")
             continue
-
-        state = data
-        last  = user.setdefault("last_notified", {})
-        msgs  = []
-
-        def check_nodes(state_key, ts_path, regen_key, emoji, label, cooldown=3600):
-            nodes = state.get(state_key, {})
-            ready = 0
-            for v in nodes.values():
-                if not isinstance(v, dict): continue
-                obj = v
-                for p in ts_path.split("."):
-                    obj = obj.get(p, {}) if isinstance(obj, dict) else None
-                    if obj is None: break
-                if obj and n >= float(obj)/1000 + REGEN.get(regen_key, 0):
-                    ready += 1
-            if ready > 0 and n - last.get(regen_key, 0) > cooldown:
-                msgs.append(f"{emoji} *¡{ready} {label} listo(s)!*")
-                last[regen_key] = n
-
-        if user.get("trees"):      check_nodes("trees",        "wood.choppedAt",   "trees",     "🌳", "árbol(es) para talar")
-        if user.get("stones"):     check_nodes("stones",       "stone.minedAt",    "stones",    "⛏️", "piedra(s) para minar")
-        if user.get("iron"):       check_nodes("iron",         "stone.minedAt",    "iron",      "🔩", "nodo(s) de hierro")
-        if user.get("gold"):       check_nodes("gold",         "stone.minedAt",    "gold",      "🥇", "nodo(s) de oro")
-        if user.get("crimstone"):  check_nodes("crimstones",   "stone.minedAt",    "crimstone", "💎", "Crimstone")
-        if user.get("sunstone"):   check_nodes("sunstones",    "stone.minedAt",    "sunstone",  "🪨", "Sunstone")
-        if user.get("obsidian"):   check_nodes("obsidian",     "stone.minedAt",    "obsidian",  "🖤", "Obsidiana")
-        if user.get("oil"):        check_nodes("oilReserves",  "oil.drilledAt",    "oil",       "🛢️", "reserva(s) de petróleo")
-        if user.get("fruits"):     check_nodes("fruitPatches", "fruit.harvestedAt","fruits",    "🍎", "árbol(es) de fruta")
-
-        if user.get("crops"):
-            crops = state.get("crops", {})
-            ready = 0
-            for c in crops.values():
-                if not isinstance(c, dict): continue
-                crop_info = c.get("crop", {})
-                if not crop_info.get("name"): continue
-                planted_at = crop_info.get("plantedAt")
-                harvest_seconds = crop_info.get("harvestSeconds", 60)
-                if planted_at and n >= float(planted_at)/1000 + float(harvest_seconds):
-                    ready += 1
-            if ready > 0 and n - last.get("crops", 0) > 600:
-                msgs.append(f"🌾 *¡{ready} cultivo(s) listo(s) para cosechar!*")
-                last["crops"] = n
-
-        if user.get("chickens"):
-            # chickens pueden estar en henHouse o chickens
-            chickens = state.get("henHouse", {}).get("chickens", state.get("chickens", {}))
-            eggs = hungry = sick = 0
-            for ch in chickens.values():
-                if not isinstance(ch, dict): continue
-                if ch.get("fedAt") and n >= float(ch["fedAt"])/1000 + REGEN["chickens"]: eggs += 1
-                if ch.get("state") == "hungry":  hungry += 1
-                if ch.get("state") == "sick":    sick += 1
-            if eggs   > 0 and n - last.get("chickens",  0) > 3600:
-                msgs.append(f"🐔 *¡{eggs} gallina(s) con huevos listos!*");    last["chickens"] = n
-            if hungry > 0 and n - last.get("ch_hungry", 0) > 3600:
-                msgs.append(f"🍗 *¡{hungry} gallina(s) con hambre!*");         last["ch_hungry"] = n
-            if sick   > 0 and n - last.get("ch_sick",   0) > 3600:
-                msgs.append(f"🤒 *¡{sick} gallina(s) enferma(s)!*");           last["ch_sick"] = n
-
-        if user.get("barn"):
-            animals = state.get("barn", {}).get("animals", {})
-            ready = sum(1 for a in animals.values()
-                        if isinstance(a, dict) and a.get("awakeAt")
-                        and n >= float(a["awakeAt"])/1000)
-            if ready > 0 and n - last.get("barn", 0) > 3600:
-                msgs.append(f"🌾 *¡{ready} animal(es) del granero listo(s)!*"); last["barn"] = n
-
-        if user.get("compost"):
-            comp     = state.get("buildings", {}).get("Compost Bin", [{}])[0]
-            ready_at = comp.get("producing", {}).get("readyAt", 0)
-            if ready_at and n >= float(ready_at)/1000 and n - last.get("compost", 0) > 3600:
-                msgs.append("🌿 *¡Tu compost está listo!*"); last["compost"] = n
-
-        if user.get("cooking"):
-            for bname, instances in state.get("buildings", {}).items():
-                if any(x in bname for x in ["Kitchen","Fire Pit","Deli","Bakery","Smoothie Shack"]):
-                    for inst in (instances if isinstance(instances, list) else []):
-                        ra = inst.get("crafting", {}).get("readyAt", 0)
-                        if ra and n >= float(ra)/1000 and n - last.get("cooking", 0) > 600:
-                            msgs.append(f"🍳 *¡Plato listo en {bname}!*"); last["cooking"] = n; break
-
-        if user.get("delivery"):
-            orders = state.get("delivery", {}).get("orders", [])
-            if any(o.get("completedAt") for o in orders) and n - last.get("delivery", 0) > 82800:
-                msgs.append("📦 *¡Entregas NPC disponibles!*"); last["delivery"] = n
-
-        if user.get("giftgiver"):
-            streak_at = state.get("dailyRewards", {}).get("streakAt", 0)
-            if streak_at and n >= float(streak_at)/1000 + 86400 and n - last.get("giftgiver", 0) > 82800:
-                msgs.append("🎁 *¡Recompensa diaria del Gift Giver disponible!*"); last["giftgiver"] = n
-
-        if user.get("loveisland"):
-            if state.get("loveIsland", {}).get("available") and n - last.get("loveisland", 0) > 86400:
-                msgs.append("🏝️ *¡Love Island disponible!*"); last["loveisland"] = n
-
-        if user.get("auction"):
-            end_at = state.get("auctioneer", {}).get("endAt", 0)
-            if end_at and n >= float(end_at)/1000 and n - last.get("auction", 0) > 3600:
-                msgs.append("🏛️ *¡Tu subasta terminó!*"); last["auction"] = n
-
-        if user.get("checklist"):
-            chores = state.get("chores", {})
-            total  = len(chores)
-            done   = sum(1 for c in chores.values() if isinstance(c, dict) and c.get("completedAt"))
-            if total > 0 and done == total and n - last.get("checklist", 0) > 82800:
-                msgs.append(f"✅ *¡Completaste todos tus quehaceres ({done}/{total})!*"); last["checklist"] = n
-
-        if user.get("trade"):
-            listings = state.get("trades", {}).get("listings", {})
-            sold = [l for l in listings.values() if isinstance(l, dict) and l.get("boughtAt")]
-            if sold and n - last.get("trade", 0) > 3600:
-                msgs.append(f"🏪 *¡Vendiste {len(sold)} artículo(s)!*"); last["trade"] = n
-
-        user["last_notified"] = last
-
-        if msgs:
-            try:
-                await context.bot.send_message(
-                    chat_id=int(user_id),
-                    text=f"🌻 *SFL Notice — Land #{farm_id}*\n\n" + "\n".join(msgs),
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                logger.error(f"Error notificando a {user_id}: {e}")
 
 # ─── TEXTO LIBRE ──────────────────────────────────────────────────────────────
 
@@ -687,7 +702,7 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
-    app.job_queue.run_repeating(job_check, interval=600, first=30)
+    app.job_queue.run_repeating(job_check, interval=120, first=20)
 
     logger.info("🌻 SFL Notice Bot con API Key oficial iniciado...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
