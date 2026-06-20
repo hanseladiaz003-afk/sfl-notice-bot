@@ -349,29 +349,29 @@ async def timers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     n     = now_ts()
     lines = [f"⏱️ *Timers — Land #{user['farm_id']}*\n"]
 
-    def nearest(items, ts_path, regen_key):
+    def nearest(items, sub_key, ts_field):
         times = []
         for v in items.values():
             if not isinstance(v, dict): continue
-            obj = v
-            for p in ts_path.split("."):
-                obj = obj.get(p, {}) if isinstance(obj, dict) else None
-                if obj is None: break
-            if obj:
-                times.append(float(obj)/1000 + REGEN[regen_key] - n)
+            sub_obj = v.get(sub_key, {})
+            if not isinstance(sub_obj, dict): continue
+            ts_value     = sub_obj.get(ts_field)
+            boosted_time = sub_obj.get("boostedTime")
+            if ts_value and boosted_time:
+                times.append(float(ts_value)/1000 + float(boosted_time)/1000 - n)
         return min(times) if times else None
 
     checks = [
-        ("trees",        "wood.choppedAt",   "trees",     "🌳 Árboles"),
-        ("stones",       "stone.minedAt",     "stones",    "⛏️ Piedras"),
-        ("iron",         "stone.minedAt",     "iron",      "🔩 Hierro"),
-        ("gold",         "stone.minedAt",     "gold",      "🥇 Oro"),
-        ("crimstones",   "stone.minedAt",     "crimstone", "💎 Crimstone"),
-        ("sunstones",    "stone.minedAt",     "sunstone",  "🪨 Sunstone"),
-        ("fruitPatches", "fruit.harvestedAt", "fruits",    "🍎 Frutas"),
+        ("trees",        "wood",  "choppedAt",   "🌳 Árboles"),
+        ("stones",       "stone", "minedAt",     "⛏️ Piedras"),
+        ("iron",         "stone", "minedAt",     "🔩 Hierro"),
+        ("gold",         "stone", "minedAt",     "🥇 Oro"),
+        ("crimstones",   "stone", "minedAt",     "💎 Crimstone"),
+        ("sunstones",    "stone", "minedAt",     "🪨 Sunstone"),
+        ("fruitPatches", "fruit", "harvestedAt", "🍎 Frutas"),
     ]
-    for state_key, path, regen_key, label in checks:
-        t = nearest(state.get(state_key, {}), path, regen_key)
+    for state_key, sub_key, ts_field, label in checks:
+        t = nearest(state.get(state_key, {}), sub_key, ts_field)
         if t is not None:
             lines.append(f"{label}: {fmt_time(t)}")
 
@@ -525,30 +525,44 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
             last  = user.setdefault("last_notified", {})
             msgs  = []
 
-            def check_nodes(state_key, ts_path, regen_key, emoji, label, cooldown=3600):
+            def check_nodes(state_key, sub_key, ts_field, emoji, label):
+                """
+                sub_key: el sub-objeto donde vive el timestamp (ej. 'stone', 'wood', 'oil')
+                ts_field: el campo de timestamp dentro del sub-objeto (ej. 'minedAt')
+                El tiempo de regeneración real viene de sub_obj['boostedTime'] (ms),
+                que es específico de cada nodo según tus mejoras del juego.
+                """
                 nodes = state.get(state_key, {})
-                ready = 0
-                for v in nodes.values():
+                ready_new = 0
+                for node_id, v in nodes.items():
                     if not isinstance(v, dict): continue
-                    obj = v
-                    for p in ts_path.split("."):
-                        obj = obj.get(p, {}) if isinstance(obj, dict) else None
-                        if obj is None: break
-                    if obj and n >= float(obj)/1000 + REGEN.get(regen_key, 0):
-                        ready += 1
-                if ready > 0 and n - last.get(regen_key, 0) > cooldown:
-                    msgs.append(f"{emoji} *¡{ready} {label} listo(s)!*")
-                    last[regen_key] = n
+                    sub_obj = v.get(sub_key, {})
+                    if not isinstance(sub_obj, dict): continue
+                    ts_value     = sub_obj.get(ts_field)
+                    boosted_time = sub_obj.get("boostedTime")
+                    if ts_value and boosted_time:
+                        ready_at = float(ts_value)/1000 + float(boosted_time)/1000
+                        if n >= ready_at:
+                            # Notificar solo una vez por nodo+timestamp.
+                            # Cuando lo recolectes, el timestamp cambia y vuelve a avisar.
+                            notify_key = f"{state_key}_{node_id}_{ts_value}"
+                            if notify_key not in last:
+                                ready_new += 1
+                                last[notify_key] = n
+                if ready_new > 0:
+                    msgs.append(f"{emoji} *¡{ready_new} {label} listo(s)!*")
 
-            if user.get("trees"):      check_nodes("trees",        "wood.choppedAt",   "trees",     "🌳", "árbol(es) para talar")
-            if user.get("stones"):     check_nodes("stones",       "stone.minedAt",    "stones",    "⛏️", "piedra(s) para minar")
-            if user.get("iron"):       check_nodes("iron",         "stone.minedAt",    "iron",      "🔩", "nodo(s) de hierro")
-            if user.get("gold"):       check_nodes("gold",         "stone.minedAt",    "gold",      "🥇", "nodo(s) de oro")
-            if user.get("crimstone"):  check_nodes("crimstones",   "stone.minedAt",    "crimstone", "💎", "Crimstone")
-            if user.get("sunstone"):   check_nodes("sunstones",    "stone.minedAt",    "sunstone",  "🪨", "Sunstone")
-            if user.get("obsidian"):   check_nodes("obsidian",     "stone.minedAt",    "obsidian",  "🖤", "Obsidiana")
-            if user.get("oil"):        check_nodes("oilReserves",  "oil.drilledAt",    "oil",       "🛢️", "reserva(s) de petróleo")
-            if user.get("fruits"):     check_nodes("fruitPatches", "fruit.harvestedAt","fruits",    "🍎", "árbol(es) de fruta")
+            if user.get("trees"):      check_nodes("trees",        "wood",  "choppedAt",   "🌳", "árbol(es) para talar")
+            if user.get("stones"):     check_nodes("stones",       "stone", "minedAt",     "⛏️", "piedra(s) para minar")
+            if user.get("iron"):       check_nodes("iron",         "stone", "minedAt",     "🔩", "nodo(s) de hierro")
+            if user.get("gold"):       check_nodes("gold",         "stone", "minedAt",     "🥇", "nodo(s) de oro")
+            if user.get("crimstone"):  check_nodes("crimstones",   "stone", "minedAt",     "💎", "Crimstone")
+            if user.get("sunstone"):   check_nodes("sunstones",    "stone", "minedAt",     "🪨", "Sunstone")
+            if user.get("obsidian"):   check_nodes("obsidian",     "stone", "minedAt",     "🖤", "Obsidiana")
+            if user.get("oil"):        check_nodes("oilReserves",  "oil",   "drilledAt",   "🛢️", "reserva(s) de petróleo")
+            if user.get("fruits"):     check_nodes("fruitPatches", "fruit", "harvestedAt", "🍎", "árbol(es) de fruta")
+
+
 
             if user.get("crops"):
                 crops = state.get("crops", {})
@@ -571,32 +585,46 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
             if user.get("chickens"):
                 # chickens pueden estar en henHouse o chickens
                 chickens = state.get("henHouse", {}).get("chickens", state.get("chickens", {}))
-                eggs = hungry = sick = 0
-                for ch in chickens.values():
+                eggs_new = hungry_new = sick_new = 0
+                for ch_id, ch in chickens.items():
                     if not isinstance(ch, dict): continue
-                    if ch.get("fedAt") and n >= float(ch["fedAt"])/1000 + REGEN["chickens"]: eggs += 1
-                    if ch.get("state") == "hungry":  hungry += 1
-                    if ch.get("state") == "sick":    sick += 1
-                if eggs   > 0 and n - last.get("chickens",  0) > 3600:
-                    msgs.append(f"🐔 *¡{eggs} gallina(s) con huevos listos!*");    last["chickens"] = n
-                if hungry > 0 and n - last.get("ch_hungry", 0) > 3600:
-                    msgs.append(f"🍗 *¡{hungry} gallina(s) con hambre!*");         last["ch_hungry"] = n
-                if sick   > 0 and n - last.get("ch_sick",   0) > 3600:
-                    msgs.append(f"🤒 *¡{sick} gallina(s) enferma(s)!*");           last["ch_sick"] = n
+                    fed_at = ch.get("fedAt")
+                    if fed_at and n >= float(fed_at)/1000 + REGEN["chickens"]:
+                        k = f"egg_{ch_id}_{fed_at}"
+                        if k not in last:
+                            eggs_new += 1; last[k] = n
+                    if ch.get("state") == "hungry":
+                        k = f"hungry_{ch_id}_{fed_at}"
+                        if k not in last:
+                            hungry_new += 1; last[k] = n
+                    if ch.get("state") == "sick":
+                        k = f"sick_{ch_id}_{fed_at}"
+                        if k not in last:
+                            sick_new += 1; last[k] = n
+                if eggs_new   > 0: msgs.append(f"🐔 *¡{eggs_new} gallina(s) con huevos listos!*")
+                if hungry_new > 0: msgs.append(f"🍗 *¡{hungry_new} gallina(s) con hambre!*")
+                if sick_new   > 0: msgs.append(f"🤒 *¡{sick_new} gallina(s) enferma(s)!*")
 
             if user.get("barn"):
                 animals = state.get("barn", {}).get("animals", {})
-                ready = sum(1 for a in animals.values()
-                            if isinstance(a, dict) and a.get("awakeAt")
-                            and n >= float(a["awakeAt"])/1000)
-                if ready > 0 and n - last.get("barn", 0) > 3600:
-                    msgs.append(f"🌾 *¡{ready} animal(es) del granero listo(s)!*"); last["barn"] = n
+                ready_new = 0
+                for a_id, a in animals.items():
+                    if not isinstance(a, dict): continue
+                    awake_at = a.get("awakeAt")
+                    if awake_at and n >= float(awake_at)/1000:
+                        k = f"barn_{a_id}_{awake_at}"
+                        if k not in last:
+                            ready_new += 1; last[k] = n
+                if ready_new > 0:
+                    msgs.append(f"🌾 *¡{ready_new} animal(es) del granero listo(s)!*")
 
             if user.get("compost"):
                 comp     = state.get("buildings", {}).get("Compost Bin", [{}])[0]
                 ready_at = comp.get("producing", {}).get("readyAt", 0)
-                if ready_at and n >= float(ready_at)/1000 and n - last.get("compost", 0) > 3600:
-                    msgs.append("🌿 *¡Tu compost está listo!*"); last["compost"] = n
+                if ready_at and n >= float(ready_at)/1000:
+                    k = f"compost_{ready_at}"
+                    if k not in last:
+                        msgs.append("🌿 *¡Tu compost está listo!*"); last[k] = n
 
             if user.get("cooking"):
                 for bname, instances in state.get("buildings", {}).items():
@@ -637,8 +665,10 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
 
             if user.get("auction"):
                 end_at = state.get("auctioneer", {}).get("endAt", 0)
-                if end_at and n >= float(end_at)/1000 and n - last.get("auction", 0) > 3600:
-                    msgs.append("🏛️ *¡Tu subasta terminó!*"); last["auction"] = n
+                if end_at and n >= float(end_at)/1000:
+                    k = f"auction_{end_at}"
+                    if k not in last:
+                        msgs.append("🏛️ *¡Tu subasta terminó!*"); last[k] = n
 
             if user.get("checklist"):
                 chores = state.get("chores", {})
