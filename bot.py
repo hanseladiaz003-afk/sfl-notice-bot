@@ -58,6 +58,9 @@ CROP_TIMES = {
     "Radish": 24 * 3600,        # 24 horas
     "Wheat": 24 * 3600,         # 24 horas
     "Barley": 24 * 3600,        # 24 horas
+    "Kale": 8 * 3600,           # 8 horas
+    "Rice": 48 * 3600,          # 48 horas
+    "Olive": 48 * 3600,         # 48 horas
 }
 
 ALERT_NAMES = {
@@ -93,6 +96,16 @@ def now_utc() -> str:
 def safe_float(val) -> float:
     try:
         return float(val)
+    except (TypeError, ValueError):
+        return 0.0
+
+def get_secs(val) -> float:
+    """Detecta automáticamente si el timestamp está en milisegundos o segundos y lo normaliza."""
+    try:
+        v = float(val)
+        if v > 50000000000:  # Si es mayor a este umbral, definitivamente son milisegundos
+            return v / 1000
+        return v
     except (TypeError, ValueError):
         return 0.0
 
@@ -134,7 +147,6 @@ def get_user(context, user_id: str) -> dict:
     return context.bot_data["users"][user_id]
 
 async def fetch_farm(farm_id: str, api_key: str) -> dict | None:
-    """Consulta la farm usando la API Key oficial del juego."""
     try:
         headers = {"x-api-key": api_key}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
@@ -349,9 +361,9 @@ async def timers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sub_obj = v.get(sub_key, {})
             if not isinstance(sub_obj, dict): continue
             ts_value = sub_obj.get(ts_field)
-            boosted_time = sub_obj.get("boostedTime")
-            if ts_value and boosted_time:
-                remaining = (float(ts_value)/1000 + float(boosted_time)/1000) - n
+            boosted_time = sub_obj.get("boostedTime", 0)
+            if ts_value:
+                remaining = (get_secs(ts_value) + get_secs(boosted_time)) - n
                 times.append(remaining)
         return min(times) if times else None
 
@@ -371,37 +383,45 @@ async def timers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if t is not None:
             lines.append(f"{label}: {fmt_time(t)}")
             
-    # LÓGICA DE CULTIVOS CORREGIDA (Usa diccionario CROP_TIMES en lugar del boostedTime roto de la API)
+    # LÓGICA DE CULTIVOS PROTEGIDA (Soporta esquemas planos/anidados e ignora parcelas vacías)
     crops = data.get("crops", {})
     crop_times = []
     crop_ready = 0
     if isinstance(crops, dict):
         for c in crops.values():
             if not isinstance(c, dict): continue
-            crop_info = c.get("crop", {})
-            crop_name = crop_info.get("name")
-            if not crop_name: continue
             
-            planted_at = crop_info.get("plantedAt")
-            if planted_at:
-                base_grow_time = CROP_TIMES.get(crop_name, 60)
-                remaining = (float(planted_at)/1000 + base_grow_time) - n
-                if remaining <= 0:
-                    crop_ready += 1
-                else:
-                    crop_times.append(remaining)
+            crop_info = c.get("crop")
+            if isinstance(crop_info, dict):
+                crop_name = crop_info.get("name")
+                planted_at = crop_info.get("plantedAt")
+            else:
+                crop_name = c.get("name")
+                planted_at = c.get("plantedAt")
+                
+            if not crop_name or not planted_at:
+                continue  # Se salta las parcelas vacías o ya recolectadas para evitar falsos positivos
+                
+            base_grow_time = CROP_TIMES.get(crop_name, 7200)
+            remaining = (get_secs(planted_at) + base_grow_time) - n
+            if remaining <= 0:
+                crop_ready += 1
+            else:
+                crop_times.append(remaining)
                     
     if crop_ready > 0:
         lines.append(f"🌱 Cultivos: ¡{crop_ready} listo(s)!")
     elif crop_times:
         lines.append(f"🌱 Cultivos (próximo): {fmt_time(min(crop_times))}")
+    else:
+        lines.append("🌱 Cultivos: Ninguno sembrado")
         
     chs = data.get("chickens", {})
     if isinstance(chs, dict):
         ch_times = []
         for c in chs.values():
             if isinstance(c, dict) and c.get("fedAt"):
-                rem = (float(c["fedAt"])/1000 + REGEN["chickens"]) - n
+                rem = (get_secs(c["fedAt"]) + REGEN["chickens"]) - n
                 ch_times.append(rem)
         if ch_times:
             lines.append(f"🐓 Gallinero: {fmt_time(min(ch_times))}")
@@ -538,9 +558,9 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
                     sub_obj = v.get(sub_key, {})
                     if not isinstance(sub_obj, dict): continue
                     ts_value = sub_obj.get(ts_field)
-                    boosted_time = sub_obj.get("boostedTime")
-                    if ts_value and boosted_time:
-                        ready_at = float(ts_value)/1000 + float(boosted_time)/1000
+                    boosted_time = sub_obj.get("boostedTime", 0)
+                    if ts_value:
+                        ready_at = get_secs(ts_value) + get_secs(boosted_time)
                         if n >= ready_at:
                             notify_key = f"{state_key}_{node_id}_{ts_value}"
                             if notify_key not in last:
@@ -559,25 +579,31 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
             if user.get("oil"): check_nodes("oilReserves", "oil", "drilledAt", "🛢️", "reserva(s) de petróleo")
             if user.get("fruits"): check_nodes("fruitPatches", "fruit", "harvestedAt", "🍎", "árbol(es) de fruta")
             
-            # CRON JOB DE CULTIVOS CORREGIDO (Usa diccionario CROP_TIMES en lugar del boostedTime roto de la API)
+            # CRON JOB DE CULTIVOS PROTEGIDO
             if user.get("crops"):
                 crops = state.get("crops", {})
                 ready_crops = []
                 if isinstance(crops, dict):
                     for crop_id, c in crops.items():
                         if not isinstance(c, dict): continue
-                        crop_info = c.get("crop", {})
-                        crop_name = crop_info.get("name")
-                        if not crop_name: continue
                         
-                        planted_at = crop_info.get("plantedAt")
-                        if planted_at:
-                            base_grow_time = CROP_TIMES.get(crop_name, 60)
-                            if n >= (float(planted_at)/1000 + base_grow_time):
-                                notify_key = f"crop_{crop_id}_{planted_at}"
-                                if notify_key not in last:
-                                    ready_crops.append(crop_name)
-                                    last[notify_key] = n
+                        crop_info = c.get("crop")
+                        if isinstance(crop_info, dict):
+                            crop_name = crop_info.get("name")
+                            planted_at = crop_info.get("plantedAt")
+                        else:
+                            crop_name = c.get("name")
+                            planted_at = c.get("plantedAt")
+                            
+                        if not crop_name or not planted_at:
+                            continue
+                            
+                        base_grow_time = CROP_TIMES.get(crop_name, 7200)
+                        if n >= (get_secs(planted_at) + base_grow_time):
+                            notify_key = f"crop_{crop_id}_{planted_at}"
+                            if notify_key not in last:
+                                ready_crops.append(crop_name)
+                                last[notify_key] = n
                 if ready_crops:
                     msgs.append(f"🌱 *¡{len(ready_crops)} cultivo(s) listo(s) para cosechar!*")
                     
@@ -588,7 +614,7 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
                     for ch_id, ch in chickens.items():
                         if not isinstance(ch, dict): continue
                         fed_at = ch.get("fedAt")
-                        if fed_at and n >= float(fed_at)/1000 + REGEN["chickens"]:
+                        if fed_at and n >= get_secs(fed_at) + REGEN["chickens"]:
                             k = f"egg_{ch_id}_{fed_at}"
                             if k not in last:
                                 eggs_new += 1
@@ -614,7 +640,7 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
                     for a_id, a in animals.items():
                         if not isinstance(a, dict): continue
                         awake_at = a.get("awakeAt")
-                        if awake_at and n >= float(awake_at)/1000:
+                        if awake_at and n >= get_secs(awake_at):
                             k = f"barn_{a_id}_{awake_at}"
                             if k not in last:
                                 ready_new += 1
@@ -626,7 +652,7 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
                 if comp_list and isinstance(comp_list, list):
                     comp = comp_list[0]
                     ready_at = comp.get("producing", {}).get("readyAt", 0)
-                    if ready_at and n >= float(ready_at)/1000:
+                    if ready_at and n >= get_secs(ready_at):
                         k = f"compost_{ready_at}"
                         if k not in last:
                             msgs.append("🪱 *¡Tu compost está listo!*")
@@ -645,7 +671,7 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
                                 ra = item.get("readyAt", 0)
                                 item_name = item.get("name", "plato")
                                 cooldown_key = f"cooking_{bname}_{item_name}_{ra}"
-                                if ra and n >= float(ra)/1000 and cooldown_key not in last:
+                                if ra and n >= get_secs(ra) and cooldown_key not in last:
                                     msgs.append(f"🍳 *¡{item_name} listo en {bname}!*")
                                     last[cooldown_key] = n
                                     
@@ -657,7 +683,7 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
                     
             if user.get("giftgiver"):
                 streak_at = state.get("dailyRewards", {}).get("streakAt", 0)
-                if streak_at and n >= float(streak_at)/1000 + 86400 and n - last.get("giftgiver", 0) > 82800:
+                if streak_at and n >= get_secs(streak_at) + 86400 and n - last.get("giftgiver", 0) > 82800:
                     msgs.append("🎁 *¡Recompensa diaria del Gift Giver disponible!*")
                     last["giftgiver"] = n
                     
@@ -668,7 +694,7 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
                     
             if user.get("auction"):
                 end_at = state.get("auctioneer", {}).get("endAt", 0)
-                if end_at and n >= float(end_at)/1000:
+                if end_at and n >= get_secs(end_at):
                     k = f"auction_{end_at}"
                     if k not in last:
                         msgs.append("🔨 *¡Tu subasta terminó!*")
