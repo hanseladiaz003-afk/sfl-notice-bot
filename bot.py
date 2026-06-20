@@ -3,6 +3,7 @@ SFL Notice Bot - Sunflower Land Telegram Bot
 Usa la API Key oficial del juego (Settings > Avanzado > Clave API)
 """
 
+import os
 import logging
 import aiohttp
 from datetime import datetime, timezone
@@ -13,7 +14,13 @@ from telegram.ext import (
 )
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
-BOT_TOKEN = "8916752238:AAGXKRhpXTWeFI-HfxeMCUdwviPldfMGymk"  # ← Token de @BotFather
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8916752238:AAGXKRhpXTWeFI-HfxeMCUdwviPldfMGymk")  # ← Token de @BotFather
+
+# Configuración permanente del usuario (sobrevive a reinicios/redeploys)
+# Configura estos valores en Railway → Variables, NO aquí en el código
+DEFAULT_FARM_ID  = os.environ.get("SFL_FARM_ID", "")
+DEFAULT_API_KEY  = os.environ.get("SFL_API_KEY", "")
+DEFAULT_TELEGRAM_USER_ID = os.environ.get("SFL_TELEGRAM_USER_ID", "")  # tu ID de Telegram
 
 SFL_API          = "https://api.sunflower-land.com/community/farms"
 SFL_PRICES_API   = "https://api.coingecko.com/api/v3/simple/price?ids=sunflower-land&vs_currencies=usd"
@@ -99,12 +106,22 @@ def get_user(context, user_id: str) -> dict:
     if "users" not in context.bot_data:
         context.bot_data["users"] = {}
     if user_id not in context.bot_data["users"]:
-        context.bot_data["users"][user_id] = {
-            "farm_id": None,
-            "api_key": None,
-            **{k: False for k in ALERT_NAMES},
-            "last_notified": {}
-        }
+        # Si este es el usuario configurado en Railway, precargar todo automáticamente
+        is_default_user = DEFAULT_TELEGRAM_USER_ID and user_id == DEFAULT_TELEGRAM_USER_ID
+        if is_default_user and DEFAULT_FARM_ID and DEFAULT_API_KEY:
+            context.bot_data["users"][user_id] = {
+                "farm_id": DEFAULT_FARM_ID,
+                "api_key": DEFAULT_API_KEY,
+                **{k: True for k in ALERT_NAMES},  # todas activas por defecto
+                "last_notified": {}
+            }
+        else:
+            context.bot_data["users"][user_id] = {
+                "farm_id": None,
+                "api_key": None,
+                **{k: False for k in ALERT_NAMES},
+                "last_notified": {}
+            }
     return context.bot_data["users"][user_id]
 
 async def fetch_farm(farm_id: str, api_key: str) -> dict | None:
@@ -572,7 +589,7 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
                 msgs.append(f"🌾 *¡{ready} animal(es) del granero listo(s)!*"); last["barn"] = n
 
         if user.get("compost"):
-            comp     = state.get("buildings", {}).get("Composter", [{}])[0]
+            comp     = state.get("buildings", {}).get("Compost Bin", [{}])[0]
             ready_at = comp.get("producing", {}).get("readyAt", 0)
             if ready_at and n >= float(ready_at)/1000 and n - last.get("compost", 0) > 3600:
                 msgs.append("🌿 *¡Tu compost está listo!*"); last["compost"] = n
@@ -644,6 +661,19 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
+
+    # Precargar configuración permanente al iniciar (para que las alertas
+    # funcionen incluso si el usuario no manda ningún mensaje tras un redeploy)
+    if DEFAULT_TELEGRAM_USER_ID and DEFAULT_FARM_ID and DEFAULT_API_KEY:
+        app.bot_data["users"] = {
+            DEFAULT_TELEGRAM_USER_ID: {
+                "farm_id": DEFAULT_FARM_ID,
+                "api_key": DEFAULT_API_KEY,
+                **{k: True for k in ALERT_NAMES},
+                "last_notified": {}
+            }
+        }
+        logger.info(f"✅ Configuración precargada para usuario {DEFAULT_TELEGRAM_USER_ID}")
 
     app.add_handler(CommandHandler("start",     start))
     app.add_handler(CommandHandler("help",      help_cmd))
