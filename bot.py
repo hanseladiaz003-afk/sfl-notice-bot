@@ -27,20 +27,37 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Tiempos de regeneración (segundos)
+# Tiempos de regeneración de recursos (segundos)
 REGEN = {
     "trees": 2 * 3600,
     "stones": 4 * 3600,
     "iron": 8 * 3600,
     "gold": 24 * 3600,
-    "crimstone": 24 * 3600,
-    "sunstone": 24 * 3600,
+    "crimstone": 3 * 24 * 3600,
+    "sunstone": 3 * 24 * 3600,
     "obsidian": 3 * 24 * 3600,
     "oil": 16 * 3600,
     "chickens": 24 * 3600,
     "barn": 24 * 3600,
     "fruits": 14 * 3600,
     "compost": 6 * 3600,
+}
+
+# Tiempos base de crecimiento de cultivos (segundos)
+CROP_TIMES = {
+    "Sunflower": 60,            # 1 min
+    "Potato": 5 * 60,           # 5 min
+    "Pumpkin": 30 * 60,         # 30 min
+    "Carrot": 60 * 60,          # 1 hora
+    "Cabbage": 2 * 3600,        # 2 horas
+    "Beetroot": 4 * 3600,       # 4 horas
+    "Cauliflower": 8 * 3600,    # 8 horas
+    "Parsnip": 12 * 3600,       # 12 horas
+    "Eggplant": 16 * 3600,      # 16 horas
+    "Corn": 20 * 3600,          # 20 horas
+    "Radish": 24 * 3600,        # 24 horas
+    "Wheat": 24 * 3600,         # 24 horas
+    "Barley": 24 * 3600,        # 24 horas
 }
 
 ALERT_NAMES = {
@@ -354,6 +371,7 @@ async def timers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if t is not None:
             lines.append(f"{label}: {fmt_time(t)}")
             
+    # LÓGICA DE CULTIVOS CORREGIDA (Usa diccionario CROP_TIMES en lugar del boostedTime roto de la API)
     crops = data.get("crops", {})
     crop_times = []
     crop_ready = 0
@@ -361,11 +379,13 @@ async def timers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for c in crops.values():
             if not isinstance(c, dict): continue
             crop_info = c.get("crop", {})
-            if not crop_info.get("name"): continue
+            crop_name = crop_info.get("name")
+            if not crop_name: continue
+            
             planted_at = crop_info.get("plantedAt")
-            grow_time = crop_info.get("boostedTime")
-            if planted_at and grow_time:
-                remaining = (float(planted_at)/1000 + float(grow_time)/1000) - n
+            if planted_at:
+                base_grow_time = CROP_TIMES.get(crop_name, 60)
+                remaining = (float(planted_at)/1000 + base_grow_time) - n
                 if remaining <= 0:
                     crop_ready += 1
                 else:
@@ -539,6 +559,7 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
             if user.get("oil"): check_nodes("oilReserves", "oil", "drilledAt", "🛢️", "reserva(s) de petróleo")
             if user.get("fruits"): check_nodes("fruitPatches", "fruit", "harvestedAt", "🍎", "árbol(es) de fruta")
             
+            # CRON JOB DE CULTIVOS CORREGIDO (Usa diccionario CROP_TIMES en lugar del boostedTime roto de la API)
             if user.get("crops"):
                 crops = state.get("crops", {})
                 ready_crops = []
@@ -546,14 +567,17 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
                     for crop_id, c in crops.items():
                         if not isinstance(c, dict): continue
                         crop_info = c.get("crop", {})
-                        if not crop_info.get("name"): continue
+                        crop_name = crop_info.get("name")
+                        if not crop_name: continue
+                        
                         planted_at = crop_info.get("plantedAt")
-                        grow_time = crop_info.get("boostedTime")
-                        if planted_at and grow_time and n >= float(planted_at)/1000 + float(grow_time)/1000:
-                            notify_key = f"crop_{crop_id}_{planted_at}"
-                            if notify_key not in last:
-                                ready_crops.append(crop_info.get("name", "cultivo"))
-                                last[notify_key] = n
+                        if planted_at:
+                            base_grow_time = CROP_TIMES.get(crop_name, 60)
+                            if n >= (float(planted_at)/1000 + base_grow_time):
+                                notify_key = f"crop_{crop_id}_{planted_at}"
+                                if notify_key not in last:
+                                    ready_crops.append(crop_name)
+                                    last[notify_key] = n
                 if ready_crops:
                     msgs.append(f"🌱 *¡{len(ready_crops)} cultivo(s) listo(s) para cosechar!*")
                     
@@ -726,7 +750,7 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     
-    # Cola de trabajos concurrentes para alertas programadas en bucle (cada 10 Minutos / 600 segundos)
+    # Cola de trabajos concurrentes para alertas programadas en bucle (cada 10 Minutos)
     app.job_queue.run_repeating(job_check, interval=600, first=20)
     
     logger.info("SFL Notice Bot con API Key oficial iniciado exitosamente...")
