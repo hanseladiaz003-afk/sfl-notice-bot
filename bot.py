@@ -361,7 +361,11 @@ async def timers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ts_value     = sub_obj.get(ts_field)
                 boosted_time = sub_obj.get("boostedTime")
                 if ts_value and boosted_time:
-                    times.append(float(ts_value)/1000 + float(boosted_time)/1000 - n)
+                    remaining = float(ts_value)/1000 + float(boosted_time)/1000 - n
+                    # Si lleva más de 4h "listo", dato probablemente viejo
+                    if remaining <= 0 and abs(remaining) > 14400:
+                        continue  # saltar dato viejo
+                    times.append(remaining)
             return min(times) if times else None
 
         checks = [
