@@ -329,85 +329,108 @@ async def land_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def timers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    user    = get_user(context, user_id)
+    try:
+        if not update.message:
+            return
+        user_id = str(update.effective_user.id)
+        user    = get_user(context, user_id)
 
-    if not user.get("farm_id") or not user.get("api_key"):
-        await update.message.reply_text(
-            "❌ Configura tu farm primero:\n`/setup 259942 sfl.MTk1...`",
-            parse_mode="Markdown"
-        )
-        return
+        if not user.get("farm_id") or not user.get("api_key"):
+            await update.message.reply_text(
+                "\u274c Configura tu farm primero:\n`/setup 259942 sfl.MTk1...`",
+                parse_mode="Markdown"
+            )
+            return
 
-    await update.message.reply_text("⏱️ Calculando tiempos...")
-    data = await fetch_farm(user["farm_id"], user["api_key"])
-    if not data:
-        await update.message.reply_text("❌ No se pudo obtener la land.")
-        return
+        await update.message.reply_text("\u23f1\ufe0f Calculando tiempos...")
+        data = await fetch_farm(user["farm_id"], user["api_key"])
+        if not data:
+            await update.message.reply_text("\u274c No se pudo obtener la land.")
+            return
 
-    state = data
-    n     = now_ts()
-    lines = [f"⏱️ *Timers — Land #{user['farm_id']}*\n"]
+        state = data
+        n     = now_ts()
+        lines = [f"\u23f1\ufe0f *Timers \u2014 Land #{user['farm_id']}*\n"]
 
-    def nearest(items, sub_key, ts_field):
-        times = []
-        for v in items.values():
-            if not isinstance(v, dict): continue
-            sub_obj = v.get(sub_key, {})
-            if not isinstance(sub_obj, dict): continue
-            ts_value     = sub_obj.get(ts_field)
-            boosted_time = sub_obj.get("boostedTime")
-            if ts_value and boosted_time:
-                times.append(float(ts_value)/1000 + float(boosted_time)/1000 - n)
-        return min(times) if times else None
+        def nearest(items, sub_key, ts_field):
+            times = []
+            for v in items.values():
+                if not isinstance(v, dict): continue
+                sub_obj = v.get(sub_key, {})
+                if not isinstance(sub_obj, dict): continue
+                ts_value     = sub_obj.get(ts_field)
+                boosted_time = sub_obj.get("boostedTime")
+                if ts_value and boosted_time:
+                    times.append(float(ts_value)/1000 + float(boosted_time)/1000 - n)
+            return min(times) if times else None
 
-    checks = [
-        ("trees",        "wood",  "choppedAt",   "🌳 Árboles"),
-        ("stones",       "stone", "minedAt",     "⛏️ Piedras"),
-        ("iron",         "stone", "minedAt",     "🔩 Hierro"),
-        ("gold",         "stone", "minedAt",     "🥇 Oro"),
-        ("crimstones",   "stone", "minedAt",     "💎 Crimstone"),
-        ("sunstones",    "stone", "minedAt",     "🪨 Sunstone"),
-        ("fruitPatches", "fruit", "harvestedAt", "🍎 Frutas"),
-    ]
-    for state_key, sub_key, ts_field, label in checks:
-        t = nearest(state.get(state_key, {}), sub_key, ts_field)
-        if t is not None:
-            lines.append(f"{label}: {fmt_time(t)}")
+        checks = [
+            ("trees",        "wood",  "choppedAt",   "\U0001f333 \u00c1rboles"),
+            ("stones",       "stone", "minedAt",     "\u26cf\ufe0f Piedras"),
+            ("iron",         "stone", "minedAt",     "\U0001f527 Hierro"),
+            ("gold",         "stone", "minedAt",     "\U0001f947 Oro"),
+            ("crimstones",   "stone", "minedAt",     "\U0001f48e Crimstone"),
+            ("sunstones",    "stone", "minedAt",     "\U0001fab8 Sunstone"),
+            ("fruitPatches", "fruit", "harvestedAt", "\U0001f34e Frutas"),
+        ]
+        for state_key, sub_key, ts_field, label in checks:
+            t = nearest(state.get(state_key, {}), sub_key, ts_field)
+            if t is not None:
+                lines.append(f"{label}: {fmt_time(t)}")
 
-    crops = state.get("crops", {})
-    crop_times = []
-    crop_ready = 0
-    for c in crops.values():
-        if not isinstance(c, dict): continue
-        crop_info = c.get("crop", {})
-        # Solo contar si tiene nombre (hay cultivo plantado)
-        if not crop_info.get("name"):
-            continue
-        planted_at  = crop_info.get("plantedAt")
-        grow_time   = crop_info.get("boostedTime")  # duración real en ms
-        if planted_at and grow_time:
-            remaining = float(planted_at)/1000 + float(grow_time)/1000 - n
-            if remaining <= 0:
-                crop_ready += 1
-            else:
-                crop_times.append(remaining)
-    if crop_ready > 0:
-        lines.append(f"🌾 Cultivos: ¡{crop_ready} listo(s)! ✅")
-    elif crop_times:
-        lines.append(f"🌾 Cultivos (próximo): {fmt_time(min(crop_times))}")
+        crops = state.get("crops", {})
+        crop_times = []
+        crop_ready = 0
+        for c in crops.values():
+            if not isinstance(c, dict): continue
+            crop_info = c.get("crop", {})
+            if not crop_info.get("name"): continue
+            planted_at = crop_info.get("plantedAt")
+            grow_time  = crop_info.get("boostedTime")
+            if planted_at and grow_time:
+                remaining = float(planted_at)/1000 + float(grow_time)/1000 - n
+                if remaining <= 0:
+                    crop_ready += 1
+                else:
+                    crop_times.append(remaining)
+        if crop_ready > 0:
+            lines.append(f"\U0001f33e Cultivos: \u00a1{crop_ready} listo(s)! \u2705")
+        elif crop_times:
+            lines.append(f"\U0001f33e Cultivos (pr\u00f3ximo): {fmt_time(min(crop_times))}")
 
-    chs = state.get("chickens", {})
-    ch_times = [float(c["fedAt"])/1000 + REGEN["chickens"] - n
-                for c in chs.values()
-                if isinstance(c, dict) and c.get("fedAt")]
-    if ch_times:
-        lines.append(f"🐔 Gallinero: {fmt_time(min(ch_times))}")
+        chs = state.get("henHouse", {}).get("chickens", state.get("chickens", {}))
+        ch_times = [float(c["fedAt"])/1000 + REGEN["chickens"] - n
+                    for c in chs.values()
+                    if isinstance(c, dict) and c.get("fedAt")]
+        if ch_times:
+            lines.append(f"\U0001f413 Gallinero: {fmt_time(min(ch_times))}")
 
-    if len(lines) == 1:
-        lines.append("No se encontraron recursos activos.")
+        for bname, instances in state.get("buildings", {}).items():
+            if any(x in bname for x in ["Kitchen","Fire Pit","Deli","Bakery","Smoothie Shack"]):
+                for inst in (instances if isinstance(instances, list) else []):
+                    if not isinstance(inst, dict): continue
+                    crafting = inst.get("crafting", [])
+                    if isinstance(crafting, dict): crafting = [crafting]
+                    for item in (crafting if isinstance(crafting, list) else []):
+                        if not isinstance(item, dict): continue
+                        ra = item.get("readyAt")
+                        if ra:
+                            t = float(ra)/1000 - n
+                            name = item.get("name", "plato")
+                            lines.append(f"\U0001f373 {bname} ({name}): {fmt_time(t)}")
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        if len(lines) == 1:
+            lines.append("No se encontraron recursos activos.")
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    except Exception as e:
+        logger.error(f"Error en /timers: {e}")
+        try:
+            await update.message.reply_text("\u274c Error calculando tiempos. Intenta de nuevo.")
+        except Exception:
+            pass
+
 
 async def precio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg  = update.message or update.callback_query.message
@@ -526,12 +549,6 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
             msgs  = []
 
             def check_nodes(state_key, sub_key, ts_field, emoji, label):
-                """
-                sub_key: el sub-objeto donde vive el timestamp (ej. 'stone', 'wood', 'oil')
-                ts_field: el campo de timestamp dentro del sub-objeto (ej. 'minedAt')
-                El tiempo de regeneración real viene de sub_obj['boostedTime'] (ms),
-                que es específico de cada nodo según tus mejoras del juego.
-                """
                 nodes = state.get(state_key, {})
                 ready_new = 0
                 for node_id, v in nodes.items():
@@ -542,9 +559,11 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
                     boosted_time = sub_obj.get("boostedTime")
                     if ts_value and boosted_time:
                         ready_at = float(ts_value)/1000 + float(boosted_time)/1000
-                        if n >= ready_at:
-                            # Notificar solo una vez por nodo+timestamp.
-                            # Cuando lo recolectes, el timestamp cambia y vuelve a avisar.
+                        # Solo notificar si:
+                        # 1. Ya está listo
+                        # 2. Se volvió listo en las ÚLTIMAS 2 HORAS (evita spam al reiniciar
+                        #    y evita notificar datos viejos de la API)
+                        if n >= ready_at and (n - ready_at) < 7200:
                             notify_key = f"{state_key}_{node_id}_{ts_value}"
                             if notify_key not in last:
                                 ready_new += 1
@@ -574,11 +593,14 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
                     planted_at = crop_info.get("plantedAt")
                     grow_time  = crop_info.get("boostedTime")
                     crop_id    = crop_info.get("id", "")
-                    if planted_at and grow_time and n >= float(planted_at)/1000 + float(grow_time)/1000:
-                        notify_key = f"crop_{crop_id}_{planted_at}"
-                        if notify_key not in last:
-                            ready_crops.append(crop_info.get("name", "cultivo"))
-                            last[notify_key] = n
+                    if planted_at and grow_time:
+                        ready_at = float(planted_at)/1000 + float(grow_time)/1000
+                        # Solo notificar si listo hace menos de 2 horas
+                        if n >= ready_at and (n - ready_at) < 7200:
+                            notify_key = f"crop_{crop_id}_{planted_at}"
+                            if notify_key not in last:
+                                ready_crops.append(crop_info.get("name", "cultivo"))
+                                last[notify_key] = n
                 if ready_crops:
                     msgs.append(f"🌾 *¡{len(ready_crops)} cultivo(s) listo(s) para cosechar!*")
 
@@ -611,7 +633,7 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
                 for a_id, a in animals.items():
                     if not isinstance(a, dict): continue
                     awake_at = a.get("awakeAt")
-                    if awake_at and n >= float(awake_at)/1000:
+                    if awake_at and n >= float(awake_at)/1000 and (n - float(awake_at)/1000) < 7200:
                         k = f"barn_{a_id}_{awake_at}"
                         if k not in last:
                             ready_new += 1; last[k] = n
@@ -645,7 +667,7 @@ async def job_check(context: ContextTypes.DEFAULT_TYPE):
                                 # solo se notifica UNA vez. Si vuelves a cocinar algo
                                 # nuevo, el readyAt cambia y se notifica de nuevo.
                                 cooldown_key = f"cooking_{bname}_{item_name}_{ra}"
-                                if ra and n >= float(ra)/1000 and cooldown_key not in last:
+                                if ra and n >= float(ra)/1000 and (n - float(ra)/1000) < 7200 and cooldown_key not in last:
                                     msgs.append(f"🍳 *¡{item_name} listo en {bname}!*")
                                     last[cooldown_key] = n
 
