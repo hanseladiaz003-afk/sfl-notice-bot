@@ -93,8 +93,8 @@ def fmt_time(secs: float) -> str:
     return f"{h}h {m}m" if h > 0 else f"{m}m"
 
 def xp_to_level(xp: float) -> int:
-    # Fórmula verificada: cada nivel n requiere n*875 XP
-    # XP 1,239,703 = nivel 53 ✅
+    # Fórmula verificada: XP 1,239,703 = nivel 53 ✅
+    # Cada nivel n requiere n*875 XP adicional
     total = 0
     for lvl in range(1, 500):
         total += lvl * 875
@@ -392,9 +392,13 @@ async def timers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             planted_at = crop_info.get("plantedAt")
             grow_time  = crop_info.get("boostedTime")
             if planted_at and grow_time:
-                remaining = float(planted_at)/1000 + float(grow_time)/1000 - n
+                ready_at  = float(planted_at)/1000 + float(grow_time)/1000
+                remaining = ready_at - n
                 if remaining <= 0:
-                    crop_ready += 1
+                    # Solo contar si se volvió listo en las últimas 2 horas
+                    # Si lleva más de 2h "listo", son datos del sync anterior
+                    if (n - ready_at) < 7200:
+                        crop_ready += 1
                 else:
                     crop_times.append(remaining)
         if crop_ready > 0:
